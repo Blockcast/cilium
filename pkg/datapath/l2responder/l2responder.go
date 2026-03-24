@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"syscall"
 
 	"github.com/cilium/hive/cell"
 	"github.com/cilium/hive/job"
@@ -180,6 +181,17 @@ func (p *l2ResponderReconciler) cycle(
 				return fmt.Errorf("delete %s@%d: %w", e.IP, idx, err)
 			}
 
+			// Remove the VIP address from the interface to prevent stale
+			// NDP/ARP entries on upstream routers. Without this, a lost
+			// lease leaves the address on the old node, causing IPv6 DAD
+			// conflicts when the new leader assigns it.
+			if err := removeVIPAddr(e.NetworkInterface, e.IP); err != nil {
+				log.Warn("Unable to remove VIP address from interface",
+					logfields.Error, err,
+					"ip", e.IP,
+					"interface", e.NetworkInterface)
+			}
+
 			return nil
 		}
 
@@ -324,15 +336,29 @@ func (p *l2ResponderReconciler) fullReconciliation(txn statedb.ReadTxn) (err err
 		desiredMap6[*key] = e
 	})
 
-	// Delete all unwanted map values
+	// Delete all unwanted map values and remove stale VIP addresses
 	for _, del := range toDelete {
-		if err := arMap.Delete(netip.AddrFrom4(del.IP), del.IfIndex); err != nil {
+		ip := netip.AddrFrom4(del.IP)
+		if err := arMap.Delete(ip, del.IfIndex); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("delete %s@%d: %w", del.IP, del.IfIndex, err))
+		}
+		if ifName := lr.LinkName(int(del.IfIndex)); ifName != "" {
+			if err := removeVIPAddr(ifName, ip); err != nil {
+				log.Warn("Unable to remove stale VIP address",
+					logfields.Error, err, "ip", ip, "ifindex", del.IfIndex)
+			}
 		}
 	}
 	for _, del := range toDelete6 {
-		if err := ndMap.Delete(netip.AddrFrom16(del.IP), del.IfIndex); err != nil {
+		ip := netip.AddrFrom16(del.IP)
+		if err := ndMap.Delete(ip, del.IfIndex); err != nil {
 			errs = errors.Join(errs, fmt.Errorf("delete %s@%d: %w", del.IP, del.IfIndex, err))
+		}
+		if ifName := lr.LinkName(int(del.IfIndex)); ifName != "" {
+			if err := removeVIPAddr(ifName, ip); err != nil {
+				log.Warn("Unable to remove stale IPv6 VIP address",
+					logfields.Error, err, "ip", ip, "ifindex", del.IfIndex)
+			}
 		}
 	}
 
@@ -444,6 +470,51 @@ func (clr *cachingLinkResolver) LinkIndex(name string) (int, error) {
 	clr.cache[name] = idx
 
 	return idx, nil
+}
+
+// LinkName returns the interface name for a given link index, using the cache.
+// Returns empty string if not found.
+func (clr *cachingLinkResolver) LinkName(idx int) string {
+	for name, i := range clr.cache {
+		if i == idx {
+			return name
+		}
+	}
+	return ""
+}
+
+// removeVIPAddr removes a VIP address from the given network interface.
+// This prevents stale addresses from causing IPv6 DAD conflicts when the
+// L2 announcement lease moves to a different node.
+func removeVIPAddr(ifName string, ip netip.Addr) error {
+	link, err := safenetlink.WithRetryResult(func() (netlink.Link, error) {
+		return netlink.LinkByName(ifName)
+	})
+	if err != nil {
+		return fmt.Errorf("link %s: %w", ifName, err)
+	}
+
+	var mask net.IPMask
+	if ip.Is4() {
+		mask = net.CIDRMask(32, 32)
+	} else {
+		mask = net.CIDRMask(128, 128)
+	}
+
+	addr := &netlink.Addr{
+		IPNet: &net.IPNet{
+			IP:   ip.AsSlice(),
+			Mask: mask,
+		},
+	}
+	if err := netlink.AddrDel(link, addr); err != nil {
+		// EADDRNOTAVAIL means the address is already gone — not an error
+		if errors.Is(err, syscall.EADDRNOTAVAIL) {
+			return nil
+		}
+		return fmt.Errorf("addr del %s on %s: %w", ip, ifName, err)
+	}
+	return nil
 }
 
 // reconcileMcMACEntries syncs IPv6 solicited-node multicast group memberships.
