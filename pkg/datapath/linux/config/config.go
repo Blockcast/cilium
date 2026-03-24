@@ -452,7 +452,16 @@ func (h *HeaderfileWriter) WriteNodeConfig(w io.Writer, cfg *datapath.LocalNodeC
 			cDefinesMap["IPV4_DIRECT_ROUTING"] = fmt.Sprintf("%d", ipv4)
 		}
 		if option.Config.EnableIPv6 {
-			ip := preferredIPv6Address(drd.Addrs)
+			// Prefer the node's IPv6 address (from K8s node status) over
+			// device addresses. Service VIP /128 addresses on the device
+			// sort before the native /64 address, causing preferredIPv6Address
+			// to pick a VIP as the SNAT source for cross-node forwarding.
+			var ip netip.Addr
+			if nodeIP, ok := netip.AddrFromSlice(cfg.NodeIPv6); ok && nodeIP.Is6() && !nodeIP.IsUnspecified() {
+				ip = nodeIP
+			} else {
+				ip = preferredIPv6Address(drd.Addrs)
+			}
 			if ip.IsUnspecified() {
 				return fmt.Errorf("IPv6 direct routing device IP not found")
 			}
