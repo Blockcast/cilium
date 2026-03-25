@@ -18,6 +18,7 @@
 #include "lib/endian.h"
 #include "lib/eps.h"
 #include "lib/identity.h"
+#include "lib/l2_responder.h"
 #include "lib/metrics.h"
 #include "lib/nat_46x64.h"
 #include "lib/sock.h"
@@ -194,8 +195,21 @@ sock4_skip_xlate(const struct lb4_service *svc, __be32 address)
 		const struct remote_endpoint_info *info;
 
 		info = lookup_ip4_remote_endpoint(address, 0);
-		if (!info || info->sec_identity != HOST_ID)
+		if (!info || info->sec_identity != HOST_ID) {
+			/* Allow translation for L2-announced ExternalIPs.
+			 * These VIPs are added to the local interface for
+			 * ARP/NDP but have world identity in ipcache, not
+			 * HOST_ID. Check the L2 responder map — if present,
+			 * this node is the L2 leader for this VIP.
+			 */
+			struct l2_responder_v4_key l2key = {
+				.ip4 = address,
+				.ifindex = CONFIG(interface_ifindex),
+			};
+			if (map_lookup_elem(&cilium_l2_responder_v4, &l2key))
+				return false;
 			return true;
+		}
 	}
 
 	return false;
@@ -736,8 +750,15 @@ sock6_skip_xlate(const struct lb6_service *svc, const union v6addr *address)
 		const struct remote_endpoint_info *info;
 
 		info = lookup_ip6_remote_endpoint(address, 0);
-		if (!info || info->sec_identity != HOST_ID)
+		if (!info || info->sec_identity != HOST_ID) {
+			struct l2_responder_v6_key l2key = {
+				.ip6 = *address,
+				.ifindex = CONFIG(interface_ifindex),
+			};
+			if (map_lookup_elem(&cilium_l2_responder_v6, &l2key))
+				return false;
 			return true;
+		}
 	}
 
 	return false;
