@@ -192,7 +192,7 @@ jobs:
           done
 
   name-validation:
-    name: Validate Workflow Names
+    name: Validate Workflow and Labeler Format
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
@@ -278,6 +278,12 @@ jobs:
             fi
           done
           exit ${EXIT}
+
+      - name: Validate GitHub labeler configuration
+        shell: bash
+        run: |
+          cd src/github.com/cilium/cilium
+          contrib/scripts/update-ci-labeler.sh
 
   actionlint:
     name: actionlint
