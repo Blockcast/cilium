@@ -28,3 +28,26 @@ sig/policy:
           - pkg/identity/**
           - pkg/proxy/dns.go
           - test/**/net_policies.go
+# Workflows triggered on 'pull_request' are highly likely to be run as part of
+# the Pull Request submission process, so we do not impose additional checks
+# for changes to those files. However, changes to any other GitHub workflow may
+# not be validated by the CI. So, we set the 'dont-merge/needs-ci-validation'
+# label to assist contributors and reviewers to know when they should apply
+# additional scrutiny to changes to the workflows.
+dont-merge/needs-ci-validation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**/*'
+          - '**/Makefile*'
+          - 'images/**/*sh'
+      - all-globs-to-all-files:
+          - '!.github/workflows/auto-approve.yaml'
+          - '!.github/workflows/cilium-cli.yaml'
+          - '!.github/workflows/codeql.yaml'
+          - '!.github/workflows/conformance-kind-proxy-embedded.yaml'
+          - '!.github/workflows/conformance-kubespray.yaml'
+          - '!.github/workflows/k8s-kind-network-policies-e2e.yaml'
+          - '!.github/workflows/lint-codeowners.yaml'
+          - '!.github/workflows/lint-images-base.yaml'
+          - '!.github/workflows/renovate-config-validator.yaml'
+          - '!.github/workflows/tests-cifuzz.yaml'
