@@ -23,8 +23,6 @@ Sphinx
 
 Cilium relies on `Sphinx`_ to generate its documentation.
 
-.. _Sphinx: https://www.sphinx-doc.org
-
 Sphinx usage
 ------------
 
