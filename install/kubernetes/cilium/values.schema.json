@@ -1854,9 +1854,6 @@
         "preAllocateIdentities": {
           "type": "boolean"
         },
-        "preCache": {
-          "type": "string"
-        },
         "proxyPort": {
           "type": "integer"
         },
@@ -5762,9 +5759,6 @@
         },
         "terminationGracePeriodSeconds": {
           "type": "integer"
-        },
-        "tofqdnsPreCache": {
-          "type": "string"
         },
         "tolerations": {
           "items": {

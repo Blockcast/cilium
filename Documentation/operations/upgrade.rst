@@ -366,6 +366,13 @@ from Cilium.
   ``hubble-redact-kafka-apikey`` agent flag have been removed as part of
   dropping Kafka support.
 
+* The ``--tofqdns-pre-cache`` agent flag and the corresponding Helm value
+  ``dnsProxy.preCache`` have been removed. This feature was originally
+  introduced for the v1.3 to v1.4 upgrade path and is no longer needed.
+  The ``cilium-dbg preflight fqdn-poller`` subcommand, which generated
+  pre-cache files, and the ``preflight.tofqdnsPreCache`` Helm value have
+  also been removed.
+
 Changes to Metrics
 ~~~~~~~~~~~~~~~~~~
 
