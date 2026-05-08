@@ -16,7 +16,7 @@ jobs:
   build-and-push:
     timeout-minutes: 60
     name: Build and Push Cilium Image
-    runs-on: ubuntu-24.04
+    runs-on: large
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
