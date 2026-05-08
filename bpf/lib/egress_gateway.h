@@ -3,14 +3,20 @@
 
 #pragma once
 
-#include <linux/in.h>		/* IN_MULTICAST */
-
 #include "lib/fib.h"
 #include "lib/identity.h"
 #include "lib/overloadable.h"
 
 #include "encap.h"
 #include "eps.h"
+
+/* Multicast destination predicates. Operate on network-byte-order addresses
+ * so the high-byte mask is constant-folded and no runtime bswap is needed
+ * on the unicast hot path.
+ */
+#define egw_ipv4_is_mcast(daddr)					\
+	(((daddr) & bpf_htonl(0xF0000000U)) == bpf_htonl(0xE0000000U))
+#define egw_ipv6_is_mcast(daddr) ((daddr)->addr[0] == 0xffU)
 
 struct egress_gw_policy_key {
 	struct bpf_lpm_trie_key lpm_key;
@@ -87,15 +93,10 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 	__u32 oif;
 	int ret;
 
-	/* Multicast destinations bypass FIB lookup. The kernel maps IPv4 multicast
-	 * addresses (224.0.0.0/4) to MAC 01:00:5e:X.Y.Z (low 23 bits of group)
-	 * without ARP/neighbor resolution, and L2 distribution is handled by the
-	 * upstream switch via IGMP snooping. No next-hop to resolve.
-	 *
-	 * egress_ifindex must be set for multicast (the policy's egress interface
-	 * is where the multicast packet is emitted).
+	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
+	 * handles L2 distribution. Requires the policy to set egress_ifindex.
 	 */
-	if (egress_ifindex && IN_MULTICAST(bpf_ntohl(daddr)))
+	if (egress_ifindex && egw_ipv4_is_mcast(daddr))
 		return ctx_redirect(ctx, egress_ifindex, 0);
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
@@ -271,14 +272,11 @@ static __always_inline
 int egress_gw_handle_packet(struct ipv4_ct_tuple *tuple,
 			    __u32 dst_sec_identity, __be32 *gateway_ip)
 {
-	/* For multicast destinations, force WORLD identity. Multicast IPs
-	 * (224.0.0.0/4) are conceptually external — they can't be cluster
-	 * endpoints — so any "in-cluster" identity from a stale ipcache
-	 * lookup is incorrect and would short-circuit the egress-gateway
-	 * path. Note: tuple is reversed by the caller, so the original
-	 * destination IP is in tuple->saddr.
+	/* Multicast destinations are external by definition; force WORLD_ID so
+	 * a stale ipcache "cluster" identity can't short-circuit the EGW path.
+	 * tuple is reversed by the caller — original daddr lives in saddr.
 	 */
-	if (IN_MULTICAST(bpf_ntohl(tuple->saddr)))
+	if (egw_ipv4_is_mcast(tuple->saddr))
 		dst_sec_identity = WORLD_ID;
 
 	/* If the packet is destined to an entity inside the cluster,
@@ -424,12 +422,8 @@ int egress_gw_fib_lookup_and_redirect_v6(struct __ctx_buff *ctx,
 	int ret, zero = 0;
 	__u32 oif;
 
-	/* IPv6 multicast destinations (FF00::/8) bypass FIB lookup. The kernel
-	 * maps IPv6 multicast addresses to MAC 33:33:XX:XX:XX:XX (low 32 bits
-	 * of group) without ND/neighbor resolution; L2 distribution is handled
-	 * by the upstream switch via MLD snooping.
-	 */
-	if (egress_ifindex && daddr->addr[0] == 0xFF)
+	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4. */
+	if (egress_ifindex && egw_ipv6_is_mcast(daddr))
 		return ctx_redirect(ctx, egress_ifindex, 0);
 
 	if (egress_ifindex && neigh_resolver_without_nh_available())
@@ -482,14 +476,8 @@ static __always_inline
 int egress_gw_handle_packet_v6(struct ipv6_ct_tuple *tuple,
 			       __u32 dst_sec_identity, __be32 *gateway_ip)
 {
-	/* For multicast destinations, force WORLD identity. IPv6 multicast
-	 * (FF00::/8, first byte 0xFF) is conceptually external — it can't be
-	 * a cluster endpoint — so any "in-cluster" identity from a stale
-	 * ipcache lookup is incorrect and would short-circuit the
-	 * egress-gateway path. Note: tuple is reversed by the caller, so
-	 * the original destination IP is in tuple->saddr.
-	 */
-	if (tuple->saddr.addr[0] == 0xFF)
+	/* See IPv4 counterpart: force WORLD_ID for multicast destinations. */
+	if (egw_ipv6_is_mcast(&tuple->saddr))
 		dst_sec_identity = WORLD_ID;
 
 	/* If the packet is destined to an entity inside the cluster,
