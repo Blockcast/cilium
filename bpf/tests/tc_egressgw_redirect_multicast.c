@@ -1,20 +1,12 @@
 // SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
 /* Copyright Authors of Cilium */
 
-/* Multicast egress via CiliumEgressGatewayPolicy.
- *
- * Tests that the userspace + datapath path accepts multicast CIDRs in
- * `destinationCIDRs` and produces TC_ACT_REDIRECT for packets matching the
- * policy. Exercises the full from-overlay flow: VXLAN decap →
- * egress_gw_snat_needed_hook (LPM lookup against a 232.0.0.0/4 entry) →
- * ipv4_l3 → set_identity_mark(MARK_MAGIC_EGW_DONE) → egress_gw_fib_lookup_and_redirect.
- *
- * This is a regression test, not a behavioral discriminator: both the new
- * IN_MULTICAST bypass branch and the legacy fib_lookup path produce
- * TC_ACT_REDIRECT (the BPF redirect helper returns the action code
- * regardless of which ifindex was passed). Performance differences (FIB
- * lookup overhead, identity-resolution defense) are not visible to BPF unit
- * tests and need profiling / runtime tooling.
+/* Multicast egress via CiliumEgressGatewayPolicy: regression test that
+ * multicast destinations matched by `destinationCIDRs` produce
+ * TC_ACT_REDIRECT through the from-overlay path. Both the new IN_MULTICAST
+ * bypass and the legacy fib_lookup path return the same action code at the
+ * BPF level, so this is a regression guard, not a behavioral discriminator
+ * between them.
  */
 
 #include <bpf/ctx/skb.h>
@@ -30,9 +22,8 @@
 #define ENCAP_IFINDEX	42
 #define IFACE_IFINDEX	44
 
-/* Provide the egress interface to the IPv4 datapath via the compile-time
- * constant (the IPv4 path reads EGRESS_IFINDEX from a #define rather than
- * from the policy struct).
+/* IPv4 datapath reads the egress ifindex from this #define rather than the
+ * policy struct (the IPv4 policy entry has no egress_ifindex field).
  */
 #define EGRESS_IFINDEX	IFACE_IFINDEX
 
@@ -70,84 +61,8 @@ mock_fib_lookup(void *ctx __maybe_unused, struct bpf_fib_lookup *params __maybe_
 #define MCAST_PORT		__bpf_htons(8000)
 #define MCAST_PUB_PORT		__bpf_htons(58764)
 
-static __always_inline int
-multicast_pktgen_v4(struct __ctx_buff *ctx)
-{
-	struct pktgen builder;
-	struct ethhdr *l2;
-	struct iphdr *l3;
-	struct udphdr *l4;
-	void *data;
-
-	pktgen__init(&builder, ctx);
-
-	l2 = pktgen__push_ethhdr(&builder);
-	if (!l2)
-		return TEST_ERROR;
-	ethhdr__set_macs(l2, (__u8 *)mac_one, (__u8 *)mac_two);
-
-	l3 = pktgen__push_default_iphdr(&builder);
-	if (!l3)
-		return TEST_ERROR;
-	l3->saddr = CLIENT_IP;
-	l3->daddr = MCAST_GROUP;
-	l3->protocol = IPPROTO_UDP;
-
-	l4 = pktgen__push_default_udphdr(&builder);
-	if (!l4)
-		return TEST_ERROR;
-	l4->source = MCAST_PUB_PORT;
-	l4->dest   = MCAST_PORT;
-
-	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
-	if (!data)
-		return TEST_ERROR;
-
-	pktgen__finish(&builder);
-	return 0;
-}
-
 #define MCAST_GROUP_V6 \
 	{ .addr = { 0xff, 0x0e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34 } }
-
-static __always_inline int
-multicast_pktgen_v6(struct __ctx_buff *ctx)
-{
-	const union v6addr client_v6 = CLIENT_IP_V6;
-	const union v6addr mcast_v6  = MCAST_GROUP_V6;
-	struct pktgen builder;
-	struct ethhdr *l2;
-	struct ipv6hdr *l3;
-	struct udphdr *l4;
-	void *data;
-
-	pktgen__init(&builder, ctx);
-
-	l2 = pktgen__push_ethhdr(&builder);
-	if (!l2)
-		return TEST_ERROR;
-	ethhdr__set_macs(l2, (__u8 *)mac_one, (__u8 *)mac_two);
-
-	l3 = pktgen__push_default_ipv6hdr(&builder);
-	if (!l3)
-		return TEST_ERROR;
-	memcpy(&l3->saddr, &client_v6, sizeof(l3->saddr));
-	memcpy(&l3->daddr, &mcast_v6, sizeof(l3->daddr));
-	l3->nexthdr = IPPROTO_UDP;
-
-	l4 = pktgen__push_default_udphdr(&builder);
-	if (!l4)
-		return TEST_ERROR;
-	l4->source = MCAST_PUB_PORT;
-	l4->dest   = MCAST_PORT;
-
-	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
-	if (!data)
-		return TEST_ERROR;
-
-	pktgen__finish(&builder);
-	return 0;
-}
 
 /* IPv4: a multicast packet matching a CEGP policy installed with
  * destinationCIDRs containing 232.0.0.0/4 produces TC_ACT_REDIRECT.
@@ -155,7 +70,25 @@ multicast_pktgen_v6(struct __ctx_buff *ctx)
 PKTGEN("tc", "tc_egressgw_redirect_multicast")
 int multicast_redirect_pktgen(struct __ctx_buff *ctx)
 {
-	return multicast_pktgen_v4(ctx);
+	struct pktgen builder;
+	struct udphdr *l4;
+	void *data;
+
+	pktgen__init(&builder, ctx);
+
+	l4 = pktgen__push_ipv4_udp_packet(&builder,
+					  (__u8 *)mac_one, (__u8 *)mac_two,
+					  CLIENT_IP, MCAST_GROUP,
+					  MCAST_PUB_PORT, MCAST_PORT);
+	if (!l4)
+		return TEST_ERROR;
+
+	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
+	if (!data)
+		return TEST_ERROR;
+
+	pktgen__finish(&builder);
+	return 0;
 }
 
 SETUP("tc", "tc_egressgw_redirect_multicast")
@@ -185,7 +118,27 @@ int multicast_redirect_check(const struct __ctx_buff *ctx)
 PKTGEN("tc", "tc_egressgw_redirect_multicast_v6")
 int multicast_redirect_pktgen_v6(struct __ctx_buff *ctx)
 {
-	return multicast_pktgen_v6(ctx);
+	union v6addr client_v6 = CLIENT_IP_V6;
+	union v6addr mcast_v6  = MCAST_GROUP_V6;
+	struct pktgen builder;
+	struct udphdr *l4;
+	void *data;
+
+	pktgen__init(&builder, ctx);
+
+	l4 = pktgen__push_ipv6_udp_packet(&builder,
+					  (__u8 *)mac_one, (__u8 *)mac_two,
+					  (__u8 *)&client_v6, (__u8 *)&mcast_v6,
+					  MCAST_PUB_PORT, MCAST_PORT);
+	if (!l4)
+		return TEST_ERROR;
+
+	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
+	if (!data)
+		return TEST_ERROR;
+
+	pktgen__finish(&builder);
+	return 0;
 }
 
 SETUP("tc", "tc_egressgw_redirect_multicast_v6")
