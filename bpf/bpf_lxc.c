@@ -34,6 +34,7 @@
 #include "lib/l3.h"
 #include "lib/local_delivery.h"
 #include "lib/lxc.h"
+#include "lib/l2_responder.h"
 #include "lib/lrp.h"
 #include "lib/identity.h"
 #include "lib/policy.h"
@@ -58,6 +59,70 @@
 #include "lib/policy_log.h"
 #include "lib/vtep.h"
 #include "lib/subnet.h"
+
+/* is_valid_l2_announced_ip{,v4} — L2-announced VIP source-IP fallthrough.
+ *
+ * Pairs with is_valid_lxc_src_ip{,v4} (lib/lxc.h, ENABLE_SIP_VERIFICATION):
+ * the strict (saddr == endpoint_ip) check runs first; on miss, callers also
+ * probe the L2 responder map. Pods running the kernel AMT relay
+ * (drivers/net/amt.c) source packets with a Service ExternalIP/VIP per
+ * RFC 7450 §5.1.2. Mirror b5b3b4b908 (sock4_skip_xlate): trust addresses
+ * present in the L2 responder map for direct_routing_dev_ifindex on this
+ * node.
+ *
+ * Kept here (not in lib/lxc.h) so lib/l2_responder.h stays out of lxc.h's
+ * include chain — l2_responder.h carries handle_l2_announcement, which
+ * references arp/icmp6/runtime-config symbols only available where arp.h
+ * + icmp6.h + the per-endpoint config are already pulled. bpf_lxc.c
+ * already pulls those; tests and other lxc.h consumers don't.
+ *
+ * Operational caveat: lookup only succeeds on the node currently holding
+ * the L2 announce lease for the VIP. Pods on non-holder nodes still see
+ * DROP_INVALID_SIP — colocate with the lease holder via nodeSelector or
+ * use hostNetwork.
+ */
+#ifdef ENABLE_SIP_VERIFICATION
+static __always_inline bool
+is_valid_l2_announced_ipv4(const struct iphdr *ip4 __maybe_unused)
+{
+#ifdef ENABLE_IPV4
+	struct l2_responder_v4_key l2key = {
+		.ip4 = ip4->saddr,
+		.ifindex = CONFIG(direct_routing_dev_ifindex),
+	};
+
+	return map_lookup_elem(&cilium_l2_responder_v4, &l2key) != NULL;
+#else
+	return false;
+#endif
+}
+
+static __always_inline bool
+is_valid_l2_announced_ipv6(struct ipv6hdr *ip6 __maybe_unused)
+{
+#ifdef ENABLE_IPV6
+	struct l2_responder_v6_key l2key = {};
+
+	l2key.ifindex = CONFIG(direct_routing_dev_ifindex);
+	ipv6_addr_copy(&l2key.ip6, (union v6addr *)&ip6->saddr);
+	return map_lookup_elem(&cilium_l2_responder_v6, &l2key) != NULL;
+#else
+	return false;
+#endif
+}
+#else /* !ENABLE_SIP_VERIFICATION */
+static __always_inline bool
+is_valid_l2_announced_ipv4(const struct iphdr *ip4 __maybe_unused)
+{
+	return true;
+}
+
+static __always_inline bool
+is_valid_l2_announced_ipv6(struct ipv6hdr *ip6 __maybe_unused)
+{
+	return true;
+}
+#endif /* ENABLE_SIP_VERIFICATION */
 
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 static __always_inline int
@@ -1005,7 +1070,9 @@ static __always_inline int __tail_handle_ipv6(struct __ctx_buff *ctx,
 #ifdef ENABLE_L7_LB
 	from_l7lb = ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB;
 #endif
-	if (!from_l7lb && unlikely(!is_valid_lxc_src_ip(ip6)))
+	if (!from_l7lb &&
+	    unlikely(!is_valid_lxc_src_ip(ip6) &&
+		     !is_valid_l2_announced_ipv6(ip6)))
 		return DROP_INVALID_SIP;
 
 #ifdef ENABLE_PER_PACKET_LB
@@ -1563,7 +1630,9 @@ static __always_inline int __tail_handle_ipv4(struct __ctx_buff *ctx,
 #ifdef ENABLE_L7_LB
 	from_l7lb = ctx_load_meta(ctx, CB_FROM_HOST) == FROM_HOST_L7_LB;
 #endif
-	if (!from_l7lb && unlikely(!is_valid_lxc_src_ipv4(ip4)))
+	if (!from_l7lb &&
+	    unlikely(!is_valid_lxc_src_ipv4(ip4) &&
+		     !is_valid_l2_announced_ipv4(ip4)))
 		return DROP_INVALID_SIP;
 
 #ifdef ENABLE_MULTICAST
