@@ -3,6 +3,10 @@ name: Build L2 Fix Image
 on:
   workflow_dispatch:
     inputs:
+      ref:
+        description: 'Branch/ref to build'
+        required: false
+        default: 'feat/l2fix-mcast'
       tag:
         description: 'Image tag'
         required: true
@@ -21,7 +25,7 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          ref: feat/l2fix-mcast
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Free disk space
