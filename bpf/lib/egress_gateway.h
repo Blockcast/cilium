@@ -14,6 +14,14 @@
 #define EGRESS_GATEWAY_RT_TBID	0
 #endif
 
+/* Multicast destination predicates. Operate on network-byte-order addresses
+ * so the high-byte mask is constant-folded and no runtime bswap is needed
+ * on the unicast hot path.
+ */
+#define egw_ipv4_is_mcast(daddr)					\
+	(((daddr) & bpf_htonl(0xF0000000U)) == bpf_htonl(0xE0000000U))
+#define egw_ipv6_is_mcast(daddr) ((daddr)->addr[0] == 0xffU)
+
 struct egress_gw_policy_key {
 	struct bpf_lpm_trie_key lpm_key;
 	__be32 saddr;
@@ -88,6 +96,12 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 	struct bpf_fib_lookup_padded fib_params = {};
 	int flags = 0;
 	int ret;
+
+	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
+	 * handles L2 distribution. Requires the policy to set egress_ifindex.
+	 */
+	if (egress_ifindex && egw_ipv4_is_mcast(daddr))
+		return ctx_redirect(ctx, egress_ifindex, 0);
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
 	 * Fall back to FIB lookup on older kernels.
@@ -275,6 +289,14 @@ static __always_inline
 int egress_gw_handle_packet(struct ipv4_ct_tuple *tuple,
 			    __u32 dst_sec_identity, __be32 *gateway_ip)
 {
+	/* Multicast destinations are external by definition; force WORLD_ID
+	 * so a stale ipcache "cluster" identity can't short-circuit the EGW
+	 * path. tuple is reversed by the caller — original daddr lives in
+	 * saddr.
+	 */
+	if (egw_ipv4_is_mcast(tuple->saddr))
+		dst_sec_identity = WORLD_ID;
+
 	/* If the packet is destined to an entity inside the cluster,
 	 * either EP or node, it should not be forwarded to an egress
 	 * gateway since only traffic leaving the cluster is supposed to
@@ -419,6 +441,10 @@ int egress_gw_fib_lookup_and_redirect_v6(struct __ctx_buff *ctx,
 	int ret, zero = 0;
 	int flags = 0;
 
+	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4. */
+	if (egress_ifindex && egw_ipv6_is_mcast(daddr))
+		return ctx_redirect(ctx, egress_ifindex, 0);
+
 	if (egress_ifindex && neigh_resolver_without_nh_available()) {
 		/* Can't use redirect_neigh() when
 		 * - custom routing table is needed, or
@@ -482,6 +508,10 @@ static __always_inline
 int egress_gw_handle_packet_v6(struct ipv6_ct_tuple *tuple,
 			       __u32 dst_sec_identity, __be32 *gateway_ip)
 {
+	/* See IPv4 counterpart: force WORLD_ID for multicast destinations. */
+	if (egw_ipv6_is_mcast(&tuple->saddr))
+		dst_sec_identity = WORLD_ID;
+
 	/* If the packet is destined to an entity inside the cluster,
 	 * either EP or node, it should not be forwarded to an egress
 	 * gateway since only traffic leaving the cluster is supposed to

@@ -58,6 +58,72 @@
 #include "lib/policy_log.h"
 #include "lib/vtep.h"
 #include "lib/subnet.h"
+#include "lib/egress_gateway.h"
+
+/* Pod-side multicast egress for the egress-gateway feature. Placed locally
+ * in bpf_lxc.c so the include-order requirement (nat.h before us, for
+ * snat_v4_*) is satisfied here without polluting lib/egress_gateway.h's
+ * surface (also pulled into bpf_overlay.c, which doesn't include nat.h).
+ *
+ * Behaviour:
+ *   - No CEGP entry for (saddr, daddr): CTX_ACT_OK (caller falls through to
+ *     the standard datapath; under ENABLE_HOST_ROUTING that means
+ *     fib_redirect_v4 out the direct-routing dev with no SNAT, same as
+ *     today).
+ *   - Policy says NO_GATEWAY: DROP_NO_EGRESS_GATEWAY.
+ *   - Policy says EXCLUDED_CIDR: CTX_ACT_OK (fall through unchanged).
+ *   - Policy points at a remote node (gateway_ip != IPV4_DIRECT_ROUTING):
+ *     DROP_NO_EGRESS_GATEWAY. Cross-node multicast is not supported by
+ *     this path.
+ *   - Policy points at this node: SNAT inner src to policy->egress_ip,
+ *     ctx_redirect to direct_routing_dev_ifindex. The kernel handles the
+ *     L2 multicast MAC at xmit; no FIB / neighbour lookup. No CT entry
+ *     (multicast has no reply path).
+ *
+ * Caller MUST revalidate the data pointer after this returns CTX_ACT_OK
+ * because snat_v4_rewrite_headers internally calls ctx_store_bytes which
+ * the verifier treats as potentially invalidating ip4 across path-merge —
+ * even though the CTX_ACT_OK fall-through never reaches snat at runtime.
+ */
+static __always_inline int
+egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
+			   struct iphdr *ip4 __maybe_unused)
+{
+#if defined(ENABLE_EGRESS_GATEWAY)
+	const struct egress_gw_policy_entry *policy;
+	fraginfo_t fraginfo;
+	int l4_off, ret;
+
+	policy = lookup_ip4_egress_gw_policy(ip4->saddr, ip4->daddr);
+	if (!policy)
+		return CTX_ACT_OK;
+
+	switch (policy->gateway_ip) {
+	case EGRESS_GATEWAY_NO_GATEWAY:
+		return DROP_NO_EGRESS_GATEWAY;
+	case EGRESS_GATEWAY_EXCLUDED_CIDR:
+		return CTX_ACT_OK;
+	}
+
+	if (policy->gateway_ip != IPV4_DIRECT_ROUTING)
+		return DROP_NO_EGRESS_GATEWAY;
+
+	fraginfo = ipfrag_encode_ipv4(ip4);
+	l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
+
+	ret = snat_v4_rewrite_headers(ctx, ip4->protocol, ETH_HLEN,
+				      ipfrag_has_l4_header(fraginfo), l4_off,
+				      ip4->saddr, policy->egress_ip,
+				      offsetof(struct iphdr, saddr),
+				      0, 0, 0, 0);
+	if (IS_ERR(ret))
+		return ret;
+
+	return ctx_redirect(ctx, CONFIG(direct_routing_dev_ifindex), 0);
+#else
+	return CTX_ACT_OK;
+#endif /* ENABLE_EGRESS_GATEWAY */
+}
 
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 static __always_inline int
@@ -1296,6 +1362,31 @@ ipv4_forward_to_destination(struct __ctx_buff *ctx, struct iphdr *ip4,
 		}
 	}
 #endif
+
+	/* Pod-side multicast intercept for the egress-gateway feature. Runs
+	 * before TUNNEL_MODE / ENABLE_HOST_ROUTING so pod multicast matched
+	 * by a CEGP gets SNAT'd and redirected to the direct-routing dev
+	 * locally — instead of being fast-pathed via fib_redirect_v4 with
+	 * the pod IP as source (which upstream switches drop as RPF-failed)
+	 * and bypassing the bpf_host egress hook chain. The mcast-only gate
+	 * keeps unicast traffic on its zero-cost path.
+	 */
+	if (egw_ipv4_is_mcast(ip4->daddr)) {
+		void *data, *data_end;
+
+		ret = egress_gw_mcast_pod_egress(ctx, ip4);
+		if (ret != CTX_ACT_OK)
+			return ret;
+
+		/* The helper may have invalidated ip4 via ctx_store_bytes on
+		 * the snat-and-redirect path. The verifier doesn't track that
+		 * the CTX_ACT_OK fall-through never reaches snat, and
+		 * conservatively marks ip4 invalid post-call. Revalidate
+		 * before subsequent reads.
+		 */
+		if (!revalidate_data(ctx, &data, &data_end, &ip4))
+			return DROP_INVALID;
+	}
 
 #if defined(TUNNEL_MODE)
 	/* If the connection was established over the tunnel, ignore the
