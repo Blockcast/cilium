@@ -36,12 +36,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to registry.blockcast.net
+      - name: Log in to harbor.blockcast.net
         uses: docker/login-action@v3
         with:
-          registry: registry.blockcast.net
-          username: ci-cache
-          password: ${{ secrets.LOCAL_REGISTRY_PASSWORD }}
+          registry: harbor.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Build and Push cilium agent
         uses: docker/build-push-action@v6
@@ -51,5 +51,11 @@ jobs:
           file: ./images/cilium/Dockerfile
           push: true
           platforms: linux/amd64
-          tags: registry.blockcast.net/blockcast/cilium:${{ github.event.inputs.tag }}
+          # Post-2026-05-17 harbor cutover: harbor.blockcast.net is canonical.
+          # The cluster still pulls via registry.blockcast.net (alias ingress),
+          # so push under both names — kubelet matches the image hostname
+          # verbatim against the local cache.
+          tags: |
+            harbor.blockcast.net/blockcast/cilium:${{ inputs.tag }}
+            registry.blockcast.net/blockcast/cilium:${{ inputs.tag }}
           target: release
