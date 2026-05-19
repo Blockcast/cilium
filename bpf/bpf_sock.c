@@ -18,8 +18,7 @@
 #include "lib/endian.h"
 #include "lib/eps.h"
 #include "lib/identity.h"
-#include <bpf/config/global.h>  /* DECLARE_CONFIG(interface_mac/ifindex): needed by l2_responder.h */
-#include "lib/l2_responder.h"
+#include "lib/l2_responder_maps.h"
 #include "lib/metrics.h"
 #include "lib/nat_46x64.h"
 #include "lib/sock.h"
