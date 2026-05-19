@@ -4,7 +4,7 @@
 #pragma once
 
 /* Map types and declarations (safe to include from any BPF program). */
-#include "lib/l2_responder_maps.h"
+#include "l2_responder_maps.h"
 /* Full announcement handler needs global config + ARP + ICMPv6. */
 #include <bpf/config/global.h>
 
