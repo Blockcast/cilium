@@ -1333,8 +1333,19 @@ skip_vtep:
 	 * upstream switches drop as RPF-failed) and bypassing the bpf_host
 	 * egress hook chain entirely. The mcast-only gate keeps unicast
 	 * traffic on its zero-cost path.
+	 *
+	 * Link-local multicast (224.0.0.0/24) is excluded: these are
+	 * hop-by-hop control plane protocols (IGMP, PIM, OSPF, ...) that
+	 * must reach the local segment's upstream router untouched. SNAT'ing
+	 * an IGMPv3 Report destined for 224.0.0.22 to the CEGP egressIP and
+	 * redirecting it is semantically wrong — IGMP membership belongs to
+	 * the pod's TTL=1 hop, not the CEGP gateway. Symptom prior to this
+	 * exclusion: AMT relay's kernel-emitted IGMPv3 INCLUDE reports were
+	 * silently swallowed at this intercept and never reached the upstream
+	 * PIM-SSM router (Juniper MX204), breaking SSM dynamic-join.
 	 */
-	if (egw_ipv4_is_mcast(ip4->daddr)) {
+	if (egw_ipv4_is_mcast(ip4->daddr) &&
+	    !egw_ipv4_is_local_mcast(ip4->daddr)) {
 		void *data, *data_end;
 
 		ret = egress_gw_mcast_pod_egress(ctx, ip4);

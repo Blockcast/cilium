@@ -18,6 +18,28 @@
 	(((daddr) & bpf_htonl(0xF0000000U)) == bpf_htonl(0xE0000000U))
 #define egw_ipv6_is_mcast(daddr) ((daddr)->addr[0] == 0xffU)
 
+/* Link-local multicast predicates — packets that must never traverse the
+ * CEGP intercept, because they are hop-by-hop control-plane protocols
+ * addressed to the immediately upstream router (IGMP, MLD, PIM, OSPF, ...)
+ * and SNAT'ing or redirecting them breaks the protocol semantics.
+ *
+ * IPv4: 224.0.0.0/24 — RFC 5771 §4 Local Network Control Block.
+ *   224.0.0.1  all-hosts
+ *   224.0.0.2  all-routers
+ *   224.0.0.13 PIM
+ *   224.0.0.22 IGMPv3 Reports        ← the AMT SSM upstream-join case
+ *
+ * IPv6: ff02::/16 — RFC 4291 §2.7 link-local scope.
+ *   ff02::1    all-nodes
+ *   ff02::2    all-routers
+ *   ff02::16   MLDv2 Reports
+ *   ff02::d    PIM
+ */
+#define egw_ipv4_is_local_mcast(daddr)					\
+	(((daddr) & bpf_htonl(0xFFFFFF00U)) == bpf_htonl(0xE0000000U))
+#define egw_ipv6_is_local_mcast(daddr)					\
+	((daddr)->addr[0] == 0xffU && ((daddr)->addr[1] & 0x0fU) == 0x02U)
+
 struct egress_gw_policy_key {
 	struct bpf_lpm_trie_key lpm_key;
 	__be32 saddr;
@@ -95,8 +117,13 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 
 	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
 	 * handles L2 distribution. Requires the policy to set egress_ifindex.
+	 *
+	 * Link-local multicast (224.0.0.0/24) is excluded — hop-by-hop control
+	 * plane (IGMP/PIM/OSPF) must traverse the standard datapath so the
+	 * kernel host stack on the egress dev controls source-selection.
 	 */
-	if (egress_ifindex && egw_ipv4_is_mcast(daddr))
+	if (egress_ifindex && egw_ipv4_is_mcast(daddr) &&
+	    !egw_ipv4_is_local_mcast(daddr))
 		return ctx_redirect(ctx, egress_ifindex, 0);
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
@@ -415,8 +442,13 @@ int egress_gw_fib_lookup_and_redirect_v6(struct __ctx_buff *ctx,
 	__u32 oif;
 	int ret;
 
-	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4. */
-	if (egress_ifindex && egw_ipv6_is_mcast(daddr))
+	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4.
+	 * Link-local scope (ff02::/16) is excluded so MLDv2 reports / ND
+	 * solicitations / RA traverse standard datapath, just like the IPv4
+	 * 224.0.0.0/24 case above.
+	 */
+	if (egress_ifindex && egw_ipv6_is_mcast(daddr) &&
+	    !egw_ipv6_is_local_mcast(daddr))
 		return ctx_redirect(ctx, egress_ifindex, 0);
 
 	if (egress_ifindex && neigh_resolver_without_nh_available())
