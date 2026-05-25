@@ -6,11 +6,11 @@ on:
       ref:
         description: 'Branch/ref to build'
         required: false
-        default: 'feat/l2fix-mcast'
+        default: 'omar/feat-l2fix-rev6-v1.19.3'
       tag:
         description: 'Image tag'
         required: true
-        default: 'v1.19.3-l2fix+mcast-v1'
+        default: 'v1.19.3-l2fix-mcast-sip-egress-rev6'
 
 permissions:
   contents: read
