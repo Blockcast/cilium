@@ -1645,7 +1645,25 @@ static __always_inline int __tail_handle_ipv4(struct __ctx_buff *ctx,
 	}
 
 	if (IN_MULTICAST(bpf_ntohl(ip4->daddr))) {
-		if (mcast_lookup_subscriber_map(&ip4->daddr))
+		/* Origin-node multicast EGW classification (BLO-8007).
+		 *
+		 * A pod-originated multicast destination that matches a multicast
+		 * EgressGatewayPolicy must leave via the egress gateway, so it must
+		 * NOT be short-circuited into the cluster-internal subscriber-map
+		 * fast path here - that is the host/local emission that the egress
+		 * classification has to win against. We therefore consult the EGW
+		 * policy map first and only fall through to local delivery when the
+		 * destination is *not* a multicast CEGP hit. On a hit we let the
+		 * packet continue down the normal egress path (per-packet LB -> CT
+		 * egress -> handle_ipv4_from_lxc), where the existing, already
+		 * multicast-aware EGW redirect/SNAT machinery takes over.
+		 *
+		 * Non-matching multicast (no policy, excluded CIDR, or no gateway)
+		 * keeps the pre-existing local multicast behavior, and unicast is
+		 * untouched (egw_mcast_request_is_egress() is multicast-only).
+		 */
+		if (!egw_mcast_request_is_egress(ip4->saddr, ip4->daddr) &&
+		    mcast_lookup_subscriber_map(&ip4->daddr))
 			return tail_call_internal(ctx,
 						  CILIUM_CALL_MULTICAST_EP_DELIVERY,
 						  ext_err);

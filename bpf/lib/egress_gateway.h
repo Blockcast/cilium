@@ -165,6 +165,51 @@ egress_gw_request_needs_redirect(struct ipv4_ct_tuple *rtuple __maybe_unused,
 #endif /* ENABLE_EGRESS_GATEWAY */
 }
 
+/* egw_mcast_request_is_egress - origin-node classification for pod-originated
+ * IPv4 multicast (BLO-8007, downstream-only).
+ *
+ * Returns true when @daddr is a multicast destination that matches a multicast
+ * EgressGatewayPolicy with a real gateway, i.e. the packet must leave the node
+ * via the egress gateway instead of the cluster-internal multicast fast path.
+ *
+ * Returns false for non-multicast destinations, for multicast with no matching
+ * policy (or an excluded-CIDR / no-gateway policy), and when EGW is compiled
+ * out. In every false case the caller keeps the pre-existing behavior, so this
+ * helper can only ever *divert* a multicast destination that an operator has
+ * explicitly placed under a policy - it never changes unicast handling.
+ *
+ * Downstream divergence from upstream Cilium: upstream never consults the EGW
+ * policy map for multicast destinations because the from-container path short-
+ * circuits IN_MULTICAST traffic to local delivery before any EGW lookup can
+ * run. We deliberately add this multicast-only lookup on the origin node so
+ * multicast CEGP hits are classified before local emission. The unicast
+ * gateway_ip sentinels (NO_GATEWAY / EXCLUDED_CIDR) are honored unchanged.
+ */
+static __always_inline bool
+egw_mcast_request_is_egress(__be32 saddr __maybe_unused, __be32 daddr __maybe_unused)
+{
+#if defined(ENABLE_EGRESS_GATEWAY)
+	const struct egress_gw_policy_entry *egress_gw_policy;
+
+	if (!egw_ipv4_is_mcast(daddr))
+		return false;
+
+	egress_gw_policy = lookup_ip4_egress_gw_policy(saddr, daddr);
+	if (!egress_gw_policy)
+		return false;
+
+	switch (egress_gw_policy->gateway_ip) {
+	case EGRESS_GATEWAY_NO_GATEWAY:
+	case EGRESS_GATEWAY_EXCLUDED_CIDR:
+		return false;
+	}
+
+	return true;
+#else
+	return false;
+#endif /* ENABLE_EGRESS_GATEWAY */
+}
+
 static __always_inline
 bool egress_gw_snat_needed(__be32 saddr __maybe_unused,
 			   __be32 daddr __maybe_unused,
