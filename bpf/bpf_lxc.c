@@ -1579,6 +1579,16 @@ ct_recreate4:
 		return DROP_UNKNOWN_CT;
 	}
 
+#ifdef ENABLE_EGRESS_GATEWAY_COMMON
+	if (egw_ipv4_is_mcast(ip4->daddr)) {
+		ret = egress_gw_handle_request(ctx, bpf_htons(ETH_P_IP),
+					       SECLABEL_IPV4, *dst_sec_identity,
+					       &trace);
+		if (ret != CTX_ACT_OK)
+			return ret;
+	}
+#endif
+
 	return ipv4_forward_to_destination(ctx, ip4, tuple, *dst_sec_identity,
 					   ct_state, ct_status, info, skip_tunnel,
 					   hairpin_flow, from_l7lb, proxy_port,

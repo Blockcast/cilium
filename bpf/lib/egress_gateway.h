@@ -27,6 +27,8 @@ struct egress_gw_policy_key {
 struct egress_gw_policy_entry {
 	__be32 egress_ip;
 	__be32 gateway_ip;
+	__u32 egress_ifindex;
+	__u32 reserved;
 };
 
 struct egress_gw_policy_key6 {
@@ -228,9 +230,7 @@ bool egress_gw_snat_needed(__be32 saddr __maybe_unused,
 		return false;
 
 	*snat_addr = egress_gw_policy->egress_ip;
-#ifdef EGRESS_IFINDEX
-	*egress_ifindex = EGRESS_IFINDEX;
-#endif
+	*egress_ifindex = egress_gw_policy->egress_ifindex;
 
 	return true;
 #else

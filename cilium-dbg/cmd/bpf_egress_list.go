@@ -24,10 +24,13 @@ const (
 )
 
 type egressPolicy struct {
-	SourceIP  string
-	DestCIDR  string
-	EgressIP  string
-	GatewayIP string
+	SourceIP      string
+	DestCIDR      string
+	EgressIP      string
+	GatewayIP     string
+	Traffic       string
+	CTSemantics   string
+	EgressIfindex uint32
 }
 
 var bpfEgressListCmd = &cobra.Command{
@@ -45,11 +48,15 @@ var bpfEgressListCmd = &cobra.Command{
 		if err == nil {
 			ipv4MapExists = true
 			parse4 := func(key *egressmap.EgressPolicyKey4, val *egressmap.EgressPolicyVal4) {
+				traffic, ctSemantics := egressPolicySemantics(key.GetDestCIDR())
 				bpfEgressList = append(bpfEgressList, egressPolicy{
-					SourceIP:  key.GetSourceIP().String(),
-					DestCIDR:  key.GetDestCIDR().String(),
-					EgressIP:  val.GetEgressAddr().String(),
-					GatewayIP: mapGatewayIP(val.GetGatewayAddr()),
+					SourceIP:      key.GetSourceIP().String(),
+					DestCIDR:      key.GetDestCIDR().String(),
+					EgressIP:      val.GetEgressAddr().String(),
+					GatewayIP:     mapGatewayIP(val.GetGatewayAddr()),
+					Traffic:       traffic,
+					CTSemantics:   ctSemantics,
+					EgressIfindex: val.EgressIfindex,
 				})
 			}
 
@@ -64,11 +71,15 @@ var bpfEgressListCmd = &cobra.Command{
 		if err == nil {
 			ipv6MapExists = true
 			parse6 := func(key *egressmap.EgressPolicyKey6, val *egressmap.EgressPolicyVal6) {
+				traffic, ctSemantics := egressPolicySemantics(key.GetDestCIDR())
 				bpfEgressList = append(bpfEgressList, egressPolicy{
-					SourceIP:  key.GetSourceIP().String(),
-					DestCIDR:  key.GetDestCIDR().String(),
-					EgressIP:  val.GetEgressAddr().String(),
-					GatewayIP: mapGatewayIP(val.GetGatewayAddr()),
+					SourceIP:      key.GetSourceIP().String(),
+					DestCIDR:      key.GetDestCIDR().String(),
+					EgressIP:      val.GetEgressAddr().String(),
+					GatewayIP:     mapGatewayIP(val.GetGatewayAddr()),
+					Traffic:       traffic,
+					CTSemantics:   ctSemantics,
+					EgressIfindex: val.EgressIfindex,
 				})
 			}
 
@@ -111,12 +122,19 @@ func mapGatewayIP(ip netip.Addr) string {
 	return ip.String()
 }
 
+func egressPolicySemantics(destCIDR netip.Prefix) (traffic, ctSemantics string) {
+	if destCIDR.Addr().IsMulticast() {
+		return "multicast", "ct-bypass"
+	}
+	return "unicast", "ct-tracked"
+}
+
 func printEgressList(egressList []egressPolicy) {
 	w := tabwriter.NewWriter(os.Stdout, 5, 0, 3, ' ', 0)
 
-	fmt.Fprintln(w, "Source IP\tDestination CIDR\tEgress IP\tGateway IP")
+	fmt.Fprintln(w, "Source IP\tDestination CIDR\tEgress IP\tGateway IP\tTraffic\tCT Semantics\tEgress Ifindex")
 	for _, ep := range egressList {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", ep.SourceIP, ep.DestCIDR, ep.EgressIP, ep.GatewayIP)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\n", ep.SourceIP, ep.DestCIDR, ep.EgressIP, ep.GatewayIP, ep.Traffic, ep.CTSemantics, ep.EgressIfindex)
 	}
 
 	w.Flush()

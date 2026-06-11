@@ -55,6 +55,7 @@ const (
 
 	destCIDR        = "1.1.1.0/24"
 	destCIDR3       = "1.1.3.0/24"
+	mcastDestCIDR   = "232.0.0.0/4"
 	allZeroDestCIDR = "0.0.0.0/0"
 	excludedCIDR1   = "1.1.1.22/32"
 	excludedCIDR2   = "1.1.1.240/30"
@@ -745,6 +746,42 @@ func TestPrivilegedEndpointDataStore(t *testing.T) {
 	})
 }
 
+func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
+	k := setupEgressGatewayTestSuite(t)
+	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1})
+
+	link, err := safenetlink.LinkByName(testInterface1)
+	require.NoError(t, err)
+	ifIndex1 := uint32(link.Attrs().Index)
+
+	policyMap4 := k.manager.policyMap4
+	egressGatewayManager := k.manager
+
+	k.policies.sync(t)
+	k.nodes.sync(t)
+	k.endpoints.sync(t)
+
+	node1 := newCiliumNode(node1, node1IP, nodeGroup1Labels)
+	addNodeAndReconcile(t, k, egressGatewayManager, &node1)
+
+	addPolicyAndReconcile(t, egressGatewayManager, k.policies, &policyParams{
+		name:             "policy-mcast",
+		endpointLabels:   ep1Labels,
+		destinationCIDRs: []string{mcastDestCIDR},
+		policyGwParams: []policyGatewayParams{{
+			nodeLabels: nodeGroup1Labels,
+			iface:      testInterface1,
+		}},
+	})
+
+	ep1, _ := newEndpointAndIdentity("ep-mcast", ep1IP, "", ep1Labels)
+	addEndpointAndReconcile(t, egressGatewayManager, k.endpoints, &ep1)
+
+	assertEgressRules4(t, policyMap4, []egressRule{
+		{ep1IP, mcastDestCIDR, egressIP1, node1IP, ifIndex1},
+	})
+}
+
 func TestPrivilegedMultigatewayPolicy(t *testing.T) {
 	k := setupEgressGatewayTestSuite(t)
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
@@ -1084,7 +1121,7 @@ func assertEgressRules4(t *testing.T, policyMap *egressmap.PolicyMap4, rules []e
 func tryAssertEgressRules4(policyMap *egressmap.PolicyMap4, rules []egressRule) error {
 	parsedRules := []parsedEgressRule{}
 	for _, r := range rules {
-		parsedRules = append(parsedRules, parseEgressRule(r.sourceIP, r.destCIDR, r.egressIP, r.gatewayIP, 0))
+		parsedRules = append(parsedRules, parseEgressRule(r.sourceIP, r.destCIDR, r.egressIP, r.gatewayIP, r.egressIfindex))
 	}
 
 	for _, r := range parsedRules {
@@ -1100,13 +1137,17 @@ func tryAssertEgressRules4(policyMap *egressmap.PolicyMap4, rules []egressRule) 
 		if policyVal.GetGatewayAddr() != r.gatewayIP {
 			return fmt.Errorf("mismatched gateway IP. Expected: %s, Got: %s", r.String(), policyVal.String())
 		}
+
+		if policyVal.EgressIfindex != r.egressIfindex {
+			return fmt.Errorf("mismatched egress ifindex")
+		}
 	}
 
 	untrackedRule := false
 	policyMap.IterateWithCallback(
 		func(key *egressmap.EgressPolicyKey4, val *egressmap.EgressPolicyVal4) {
 			for _, r := range parsedRules {
-				if key.Match(r.sourceIP, r.destCIDR) && val.Match(r.egressIP, r.gatewayIP) {
+				if key.Match(r.sourceIP, r.destCIDR) && val.Match(r.egressIP, r.gatewayIP, r.egressIfindex) {
 					return
 				}
 			}
