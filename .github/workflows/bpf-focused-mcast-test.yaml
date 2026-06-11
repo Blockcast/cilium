@@ -1,0 +1,50 @@
+name: BPF Focused Multicast EGW Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      bpf_test:
+        description: 'BPF test name (without .c extension)'
+        required: false
+        default: 'tc_egressgw_redirect_multicast'
+      branch:
+        description: 'Branch to test'
+        required: false
+        default: 'feat/multicast-egw-cegp-downstream'
+
+permissions: read-all
+
+jobs:
+  bpf_focused_test:
+    name: BPF Focused Multicast EGW Test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.branch || 'feat/multicast-egw-cegp-downstream' }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Git status and log
+        run: |
+          echo "=== git status ==="
+          git status --short --branch
+          echo ""
+          echo "=== git log ==="
+          git log --oneline -5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install Python deps for Scapy packet generation
+        run: |
+          pip3 install --quiet scapy Jinja2
+
+      - name: Run focused BPF test
+        run: |
+          make run_bpf_tests \
+            BPF_TEST="${{ github.event.inputs.bpf_test || 'tc_egressgw_redirect_multicast' }}" \
+            BPF_TEST_VERBOSE=1
