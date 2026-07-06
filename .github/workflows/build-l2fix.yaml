@@ -20,7 +20,7 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          ref: fix/l2-responder-stale-vip-cleanup
+          ref: omar/l2fix-1.20-port
           persist-credentials: false
 
       - name: Free disk space
