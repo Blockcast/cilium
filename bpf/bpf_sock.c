@@ -18,7 +18,7 @@
 #include "lib/endian.h"
 #include "lib/eps.h"
 #include "lib/identity.h"
-#include "lib/l2_responder.h"
+#include "lib/l2_responder_maps.h"
 #include "lib/metrics.h"
 #include "lib/nat_46x64.h"
 #include "lib/sock.h"
@@ -211,7 +211,7 @@ sock4_skip_xlate(const struct lb4_service *svc, __be32 address)
 			 * this node is the L2 leader for this VIP.
 			 */
 			struct l2_responder_v4_key l2key = {
-				.ip4 = address,
+				.ip4 = { .be32 = address },
 				.ifindex = CONFIG(interface_ifindex),
 			};
 			if (map_lookup_elem(&cilium_l2_responder_v4, &l2key))

@@ -11,7 +11,7 @@
 #include "dbg.h"
 #include "trace.h"
 #include "l4.h"
-#include "l2_responder.h"
+#include "l2_responder_maps.h"
 #include "proxy.h"
 #include "proxy_hairpin.h"
 
@@ -55,7 +55,7 @@ int is_valid_lxc_src_ipv4(const struct iphdr *ip4 __maybe_unused)
 	{
 		struct l2_responder_v4_key l2key = {};
 
-		l2key.ip4 = ip4->saddr;
+		l2key.ip4.be32 = ip4->saddr;
 		l2key.ifindex = CONFIG(direct_routing_dev_ifindex);
 		if (map_lookup_elem(&cilium_l2_responder_v4, &l2key))
 			return 1;
