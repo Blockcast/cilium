@@ -1,6 +1,7 @@
-name: BPF Focused Multicast EGW Test
+name: BPF Focused Multicast EGW Test (ARC)
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - 'ci/bpf-mcast-test-9893'
@@ -9,34 +10,83 @@ permissions: read-all
 
 jobs:
   bpf_focused_test:
-    name: BPF Focused Multicast EGW Test
-    runs-on: ubuntu-24.04
+    name: BPF Focused Multicast EGW Test on ARC
+    runs-on: arc-dind
+    timeout-minutes: 30
+    env:
+      FEATURE_REF: feat/multicast-egw-cegp-downstream
+      SOURCE_BUILDER: quay.io/cilium/cilium-builder:af739f8db4e7f9368713e6bdbcb4dc8bc45cb7fd
+      HARBOR_BUILDER: registry.blockcast.net/blockcast/ci/cilium-builder:af739f8db4e7f9368713e6bdbcb4dc8bc45cb7fd
+
     steps:
-      - name: Checkout code
+      - name: Record on-prem ARC runner provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'runner.name=%s\nrunner.os=%s\nrunner.arch=%s\nrunner.environment=%s\n' \
+            "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH" "$RUNNER_ENVIRONMENT"
+          uname -a
+          id
+          printf 'docker.host=%s\n' "${DOCKER_HOST:-unset}"
+          docker version
+          case "$RUNNER_NAME" in
+            arc-dind-*-runner-*) ;;
+            *) echo "::error::Expected on-prem arc-dind runner, got $RUNNER_NAME"; exit 1 ;;
+          esac
+
+      - name: Checkout current multicast EGW feature branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ env.FEATURE_REF }}
           persist-credentials: false
           fetch-depth: 0
 
-      - name: Git status and log
+      - name: Record feature revision
+        shell: bash
         run: |
-          echo "=== git status ==="
+          set -euo pipefail
+          echo '=== git status --short --branch ==='
           git status --short --branch
-          echo ""
-          echo "=== git log ==="
+          echo '=== git log --oneline -5 ==='
           git log --oneline -5
+          echo "feature.sha=$(git rev-parse HEAD)"
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Log in to Harbor
+        uses: docker/login-action@v3
         with:
-          go-version-file: 'go.mod'
+          registry: registry.blockcast.net
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
-      - name: Install Python deps for Scapy packet generation
+      - name: Ensure pinned Cilium builder is available from Harbor
+        id: builder
+        shell: bash
         run: |
-          pip3 install --quiet scapy Jinja2
+          set -euo pipefail
+          if ! docker pull "$HARBOR_BUILDER"; then
+            echo "Harbor builder missing; seeding pinned upstream tag into Harbor."
+            docker pull "$SOURCE_BUILDER"
+            docker tag "$SOURCE_BUILDER" "$HARBOR_BUILDER"
+            docker push "$HARBOR_BUILDER"
+          fi
+          docker pull "$HARBOR_BUILDER"
+          HARBOR_DIGEST=$(docker image inspect "$HARBOR_BUILDER" \
+            --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+            | grep '^registry.blockcast.net/' | sort -u | head -1)
+          test -n "$HARBOR_DIGEST"
+          echo "builder.harbor_ref=$HARBOR_DIGEST"
+          echo "builder.image_id=$(docker image inspect "$HARBOR_BUILDER" --format '{{.Id}}')"
+          echo "digest_ref=$HARBOR_DIGEST" >> "$GITHUB_OUTPUT"
 
-      - name: Run focused BPF test
+      - name: Run exact focused BPF verifier in Harbor builder
+        shell: bash
         run: |
-          make run_bpf_tests \
-            BPF_TEST=tc_egressgw_redirect_multicast \
-            BPF_TEST_VERBOSE=1
+          set -euo pipefail
+          echo '=== exact verifier command ==='
+          echo 'make -C bpf/tests run BPF_TEST=tc_egressgw_redirect_multicast V=1'
+          docker run --rm --privileged \
+            -v /sys:/sys \
+            -v "$GITHUB_WORKSPACE":/go/src/github.com/cilium/cilium \
+            -w /go/src/github.com/cilium/cilium \
+            "${{ steps.builder.outputs.digest_ref }}" \
+            bash -lc 'set -euo pipefail; make -C bpf/tests run BPF_TEST=tc_egressgw_redirect_multicast V=1'
