@@ -72,6 +72,11 @@ type PolicyConfig struct {
 	gatewayConfigs    []gatewayConfig
 	matchedEndpoints  map[endpointID]*endpointMetadata
 	v6Needed          bool
+	multicast         bool
+}
+
+func isIPv4MulticastPrefix(cidr netip.Prefix) bool {
+	return cidr.Addr().Is4() && cidr.Addr().IsMulticast()
 }
 
 // PolicyID includes policy name and namespace
@@ -330,6 +335,7 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 	var excludedCIDRs []netip.Prefix
 	var policyGwConfigs []policyGatewayConfig
 	var v6Needed bool
+	var multicast bool
 
 	allowAllNamespacesRequirement := slim_metav1.LabelSelectorRequirement{
 		Key:      k8sConst.PodNamespaceLabel,
@@ -369,6 +375,15 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse destination CIDR %s: %w", cidrString, err)
 		}
+		if cidr.Addr().Is6() && cidr.Addr().IsMulticast() {
+			return nil, fmt.Errorf("multicast destination CIDR %s is unsupported: only IPv4 multicast egress gateway policies are supported", cidrString)
+		}
+		if isIPv4MulticastPrefix(cidr) {
+			if cidr.Bits() < 4 {
+				return nil, fmt.Errorf("multicast destination CIDR %s is unsupported: IPv4 multicast prefixes must stay within 224.0.0.0/4", cidrString)
+			}
+			multicast = true
+		}
 		dstCidrList = append(dstCidrList, cidr)
 		if cidr.Addr().Is6() {
 			v6Needed = true
@@ -379,6 +394,9 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		cidr, err := netip.ParsePrefix(string(cidrString))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse excluded CIDR %s: %w", cidr, err)
+		}
+		if cidr.Addr().IsMulticast() {
+			return nil, fmt.Errorf("excluded CIDR %s is unsupported: multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs", cidrString)
 		}
 		excludedCIDRs = append(excludedCIDRs, cidr)
 	}
@@ -433,6 +451,7 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		matchedEndpoints:  make(map[endpointID]*endpointMetadata),
 		policyGwConfigs:   policyGwConfigs,
 		v6Needed:          v6Needed,
+		multicast:         multicast,
 		id: types.NamespacedName{
 			Name: name,
 		},
