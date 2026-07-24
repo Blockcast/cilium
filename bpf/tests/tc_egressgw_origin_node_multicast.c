@@ -141,5 +141,3 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 
 	test_finish();
 }
-
-BPF_LICENSE("Dual BSD/GPL");
