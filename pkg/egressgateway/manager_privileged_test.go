@@ -445,7 +445,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 
 	assertEgressRules4(t, policyMap4, []egressRule{
 		{ep1IP, destCIDR, egressIP1, node1IP, 0},
-		{ep1IP, excludedCIDR1, egressIP1, gatewayExcludedCIDRValue, ifIndex1},
+		{ep1IP, excludedCIDR1, egressIP1, gatewayExcludedCIDRValue, 0},
 		{ep2IP, destCIDR, zeroIP4, node2IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
