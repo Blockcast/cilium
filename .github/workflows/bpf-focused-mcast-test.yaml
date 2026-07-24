@@ -1,24 +1,27 @@
-name: BPF Focused Multicast EGW Test
+name: Multicast EGW Regression Test
 
 on:
+  pull_request:
+    branches:
+      - feat/l2fix-mcast-v3-sip-egress
+    paths:
+      - '.github/workflows/bpf-focused-mcast-test.yaml'
+      - 'bpf/**'
+      - 'pkg/egressgateway/**'
+      - 'pkg/maps/egressmap/**'
   workflow_dispatch:
-    inputs:
-      bpf_test:
-        description: 'BPF test name (without .c extension)'
-        required: false
-        default: 'tc_egressgw_redirect_multicast'
 
 permissions: read-all
 
 jobs:
-  bpf_focused_test:
-    name: BPF Focused Multicast EGW Test
+  multicast_egw_regression:
+    name: BPF and Go multicast EGW regression
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: feat/multicast-egw-cegp-downstream
           persist-credentials: false
           fetch-depth: 0
 
@@ -39,8 +42,25 @@ jobs:
         run: |
           pip3 install --quiet scapy Jinja2
 
-      - name: Run focused BPF test
+      - name: Run multicast and unicast CEGP BPF regressions
         run: |
+          # BPF_TEST is a regex over test object names. This one invocation
+          # includes both multicast tests and every existing unicast
+          # tc_egressgw* regression in a single test receipt.
           make run_bpf_tests \
-            BPF_TEST="${{ github.event.inputs.bpf_test || 'tc_egressgw_redirect_multicast' }}" \
+            BPF_TEST='tc_egressgw' \
             BPF_TEST_VERBOSE=1
+
+      - name: Run CEGP validation and reconciliation regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo -E env "PATH=$PATH" PRIVILEGED_TESTS=1 \
+            go test -v -count=1 -timeout=10m ./pkg/egressgateway \
+            -run '^(TestParseCEGPMulticastDestinationCIDRs|TestPrivilegedEgressGatewayCEGPParser|TestPrivilegedEgressGatewayManager|TestPrivilegedMulticastEgressGatewayManager)$' \
+            | tee /tmp/multicast-egw-go-test.log
+
+          if grep -q -- '--- SKIP:' /tmp/multicast-egw-go-test.log; then
+            echo 'Privileged reconciliation test unexpectedly skipped' >&2
+            exit 1
+          fi

@@ -58,3 +58,62 @@ Because this problem is a result of hitting a hard limit on Cilium's Egress Gate
 that are being SNATed through an egress-gateway, This can be done by having clients avoid creating as many new connections, or by lowering the amount of connections going to the same remote address (with a common egress IP) by splitting up traffic via different egress IPs and/or remote endpoint addresses.
 
 For alerting and observability on SNAT source port utilization please see the :ref:`NAT endpoint max connection <nat_metrics>` metric which tracks the top saturation (as a percentage of total the max available) of a Cilium Agent.
+
+Verify downstream multicast egress
+----------------------------------
+
+The downstream multicast Egress Gateway extension can be verified on a staging
+cluster with at least two nodes using VXLAN encapsulation. The selected gateway
+node must have the policy's ``egressIP`` assigned to its external interface and
+that address must be routable on the receiver-facing network. These L2 and
+routing prerequisites are the exact reason this check is not run on a standard
+GitHub-hosted runner.
+
+Set the values for the deployed policy and publisher:
+
+.. code-block:: shell-session
+
+    $ export GATEWAY_NODE=worker-gateway
+    $ export EXTERNAL_IFACE=eth0
+    $ export EGRESS_IP=198.51.100.128
+    $ export POLICY_CIDR=232.0.0.0/4
+    $ export GROUP=232.1.1.50
+    $ export PORT=5000
+    $ export PUBLISHER_POD=multicast-publisher
+
+Confirm that Cilium reconciled the multicast policy with an external interface.
+The row must report ``multicast``, ``ct-bypass``, and a non-zero egress ifindex:
+
+.. code-block:: shell-session
+
+    $ kubectl -n kube-system exec ds/cilium -- cilium-dbg bpf egress list | grep "${POLICY_CIDR}"
+    10.244.1.25   232.0.0.0/4   198.51.100.128   10.0.0.12   multicast   ct-bypass   2
+
+Start a capture on the gateway node's external interface:
+
+.. code-block:: shell-session
+
+    $ kubectl debug node/${GATEWAY_NODE} -it --image=nicolaka/netshoot -- \
+        tcpdump -ni ${EXTERNAL_IFACE} -vv -c 5 "udp and dst host ${GROUP} and dst port ${PORT}"
+
+In another terminal, publish five datagrams from a pod selected by the
+``CiliumEgressGatewayPolicy``:
+
+.. code-block:: shell-session
+
+    $ kubectl exec ${PUBLISHER_POD} -- sh -c \
+        'for n in 1 2 3 4 5; do printf "multicast-egw-%s\n" "$n" | nc -u -w1 "'$GROUP'" "'$PORT'"; done'
+
+The capture must show the policy's egress IP as the source and preserve the
+multicast destination. The publisher pod IP or origin-node IP must not appear as
+the source:
+
+.. code-block:: text
+
+    IP 198.51.100.128.40000 > 232.1.1.50.5000: UDP, length 16
+    IP 198.51.100.128.40001 > 232.1.1.50.5000: UDP, length 16
+
+Record the Cilium image digest, policy YAML, gateway node, external interface,
+and full tcpdump output with the test receipt. A capture showing
+``src=<egressIP>, dst=232.x.y.z`` is the acceptance signal; zero packets, a
+different source, or packets on a non-gateway node is a failure.
