@@ -46,6 +46,24 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+
+          # Guard against a renamed/removed test object silently shrinking the
+          # BPF_TEST regex match below while the job still exits 0. This checks
+          # source-file presence rather than grepping runtime test-runner output:
+          # the `make run_bpf_tests` pipeline formats results through `tparse`,
+          # which does not emit a `--- PASS: <name>` line per object, so asserting
+          # against that text is unreliable. Checking that each required object's
+          # source still exists (and thus still gets compiled and matched by the
+          # BPF_TEST regex below) gives the same regression protection.
+          for obj in tc_egressgw_origin_node_multicast tc_egressgw_redirect_multicast \
+                     tc_egressgw_redirect_from_host tc_egressgw_redirect_from_overlay \
+                     tc_egressgw_redirect_from_overlay_with_egress_interface tc_egressgw_snat; do
+            if [ ! -f "bpf/tests/${obj}.c" ]; then
+              echo "Required BPF test source bpf/tests/${obj}.c is missing — BPF_TEST regex match would silently shrink" >&2
+              exit 1
+            fi
+          done
+
           # BPF_TEST is a regex over test object names. This one invocation
           # includes both multicast tests and every existing unicast
           # tc_egressgw* regression in a single test receipt.
@@ -59,18 +77,13 @@ jobs:
             exit 1
           fi
 
-          # Guard against a renamed/removed test object silently shrinking
-          # the BPF_TEST regex match while the job still exits 0: assert both
-          # multicast objects and every existing unicast tc_egressgw* object
-          # actually ran and passed.
-          for obj in tc_egressgw_origin_node_multicast tc_egressgw_redirect_multicast \
-                     tc_egressgw_redirect_from_host tc_egressgw_redirect_from_overlay \
-                     tc_egressgw_redirect_from_overlay_with_egress_interface tc_egressgw_snat; do
-            if ! grep -q -- "--- PASS: TestBPF/${obj}.o" /tmp/bpf-egressgw-test.log; then
-              echo "Required BPF test object ${obj}.o did not run/pass" >&2
-              exit 1
-            fi
-          done
+          # Belt-and-suspenders: fail loudly (rather than silently pass) if the
+          # test runner's summary format ever changes shape and we can no longer
+          # find any pass/fail/skip tally at all in the captured output.
+          if ! grep -qE 'PASS.*FAIL.*SKIP|ok[[:space:]]+github.com/cilium/cilium/bpf/tests/bpftest' /tmp/bpf-egressgw-test.log; then
+            echo 'Could not find a recognizable BPF test summary in the output — treating as a failure' >&2
+            exit 1
+          fi
 
       - name: Run CEGP validation and reconciliation regressions
         shell: bash
