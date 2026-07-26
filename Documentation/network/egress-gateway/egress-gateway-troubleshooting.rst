@@ -76,7 +76,7 @@ Set the values for the deployed policy and publisher:
     $ export GATEWAY_NODE=worker-gateway
     $ export EXTERNAL_IFACE=eth0
     $ export EGRESS_IP=198.51.100.128
-    $ export POLICY_CIDR=232.0.0.0/4
+    $ export POLICY_CIDR=232.0.0.0/8
     $ export GROUP=232.1.1.50
     $ export PORT=5000
     $ export PUBLISHER_POD=multicast-publisher
@@ -86,8 +86,9 @@ The row must report ``multicast``, ``ct-bypass``, and a non-zero egress ifindex:
 
 .. code-block:: shell-session
 
-    $ kubectl -n kube-system exec ds/cilium -- cilium-dbg bpf egress list | grep "${POLICY_CIDR}"
-    10.244.1.25   232.0.0.0/4   198.51.100.128   10.0.0.12   multicast   ct-bypass   2
+    $ kubectl -n kube-system exec $(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=${GATEWAY_NODE} -o name) -c cilium-agent -- \
+        cilium-dbg bpf egress list | grep "${POLICY_CIDR}"
+    10.244.1.25   232.0.0.0/8   198.51.100.128   10.0.0.12   multicast   ct-bypass   2
 
 Start a capture on the gateway node's external interface:
 

@@ -43,13 +43,34 @@ jobs:
           pip3 install --quiet scapy Jinja2
 
       - name: Run multicast and unicast CEGP BPF regressions
+        shell: bash
         run: |
+          set -o pipefail
           # BPF_TEST is a regex over test object names. This one invocation
           # includes both multicast tests and every existing unicast
           # tc_egressgw* regression in a single test receipt.
           make run_bpf_tests \
             BPF_TEST='tc_egressgw' \
-            BPF_TEST_VERBOSE=1
+            BPF_TEST_VERBOSE=1 \
+            | tee /tmp/bpf-egressgw-test.log
+
+          if grep -q -- '--- SKIP:' /tmp/bpf-egressgw-test.log; then
+            echo 'BPF egress gateway test unexpectedly skipped' >&2
+            exit 1
+          fi
+
+          # Guard against a renamed/removed test object silently shrinking
+          # the BPF_TEST regex match while the job still exits 0: assert both
+          # multicast objects and every existing unicast tc_egressgw* object
+          # actually ran and passed.
+          for obj in tc_egressgw_origin_node_multicast tc_egressgw_redirect_multicast \
+                     tc_egressgw_redirect_from_host tc_egressgw_redirect_from_overlay \
+                     tc_egressgw_redirect_from_overlay_with_egress_interface tc_egressgw_snat; do
+            if ! grep -q -- "--- PASS: TestBPF/${obj}.o" /tmp/bpf-egressgw-test.log; then
+              echo "Required BPF test object ${obj}.o did not run/pass" >&2
+              exit 1
+            fi
+          done
 
       - name: Run CEGP validation and reconciliation regressions
         shell: bash
