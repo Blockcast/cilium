@@ -47,43 +47,74 @@ jobs:
         run: |
           set -o pipefail
 
-          # Guard against a renamed/removed test object silently shrinking the
-          # BPF_TEST regex match below while the job still exits 0. This checks
-          # source-file presence rather than grepping runtime test-runner output:
-          # the `make run_bpf_tests` pipeline formats results through `tparse`,
-          # which does not emit a `--- PASS: <name>` line per object, so asserting
-          # against that text is unreliable. Checking that each required object's
-          # source still exists (and thus still gets compiled and matched by the
-          # BPF_TEST regex below) gives the same regression protection.
-          for obj in tc_egressgw_origin_node_multicast tc_egressgw_redirect_multicast \
-                     tc_egressgw_redirect_from_host tc_egressgw_redirect_from_overlay \
-                     tc_egressgw_redirect_from_overlay_with_egress_interface tc_egressgw_snat; do
-            if [ ! -f "bpf/tests/${obj}.c" ]; then
-              echo "Required BPF test source bpf/tests/${obj}.c is missing — BPF_TEST regex match would silently shrink" >&2
-              exit 1
-            fi
-          done
+          # Every object that must actually execute in this receipt: the two
+          # multicast cases plus the pre-existing unicast CEGP regressions.
+          REQUIRED_OBJECTS=(
+            tc_egressgw_origin_node_multicast
+            tc_egressgw_redirect_multicast
+            tc_egressgw_redirect_from_host
+            tc_egressgw_redirect_from_overlay
+            tc_egressgw_redirect_from_overlay_with_egress_interface
+            tc_egressgw_snat
+          )
 
-          # BPF_TEST is a regex over test object names. This one invocation
-          # includes both multicast tests and every existing unicast
-          # tc_egressgw* regression in a single test receipt.
+          # Remove any pre-existing objects so the post-run assertion below
+          # proves that *this* invocation compiled and selected each one.
+          rm -f bpf/tests/tc_egressgw_*.o
+
           make run_bpf_tests \
             BPF_TEST='tc_egressgw' \
             BPF_TEST_VERBOSE=1 \
             | tee /tmp/bpf-egressgw-test.log
 
-          if grep -q -- '--- SKIP:' /tmp/bpf-egressgw-test.log; then
-            echo 'BPF egress gateway test unexpectedly skipped' >&2
+          # Fail closed on the execution set rather than on source presence.
+          # bpftest enumerates the *.o files under -bpf-test-path and runs every
+          # one whose name carries the -test prefix, so an object built here is
+          # an object that ran. Asserting on built objects (not .c sources) is
+          # what catches a selection regression: BPF_TEST previously expanded to
+          # `grep tc_egressgw.o`, whose unescaped '.' matched only
+          # tc_egressgw_origin_node_multicast.o, so five of these six never
+          # compiled and never ran while the job still reported success.
+          missing=()
+          for obj in "${REQUIRED_OBJECTS[@]}"; do
+            [ -f "bpf/tests/${obj}.o" ] || missing+=("${obj}")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "These BPF test objects were not built, so they did not run: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Verified all ${#REQUIRED_OBJECTS[@]} required tc_egressgw BPF objects were built and executed."
+
+          # Parse the tparse summary row for this package and require a tally.
+          # A missing/unparseable row is itself a failure, so a change in the
+          # runner's output shape can never silently degrade into a pass.
+          # Columns are: STATUS | ELAPSED | PACKAGE | COVER | PASS | FAIL | SKIP
+          # `read` returns non-zero on empty input; swallow that so the explicit
+          # validation below reports the problem instead of `set -e` aborting
+          # with no context.
+          read -r pass fail skip < <(
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/bpf-egressgw-test.log \
+              | awk -F'│' '/github.com\/cilium\/cilium\/bpf\/tests\/bpftest/ && NF >= 9 {
+                  for (i = 6; i <= 8; i++) gsub(/^ +| +$/, "", $i);
+                  print $6, $7, $8; exit
+                }'
+          ) || true
+          if ! [[ "${pass}" =~ ^[0-9]+$ && "${fail}" =~ ^[0-9]+$ && "${skip}" =~ ^[0-9]+$ ]]; then
+            echo "Could not parse a numeric BPF test summary row (got pass='${pass}' fail='${fail}' skip='${skip}') — treating as a failure" >&2
+            exit 1
+          fi
+          echo "BPF receipt: PASS=${pass} FAIL=${fail} SKIP=${skip}"
+
+          if [ "${fail}" -ne 0 ] || [ "${skip}" -ne 0 ]; then
+            echo "BPF egress gateway tests reported failures/skips (FAIL=${fail} SKIP=${skip})" >&2
             exit 1
           fi
 
-          # Belt-and-suspenders: fail loudly (rather than silently pass) if the
-          # test runner's summary format ever changes shape and we can no longer
-          # find any pass/fail/skip tally at all in the captured output.
-          if ! grep -qE 'PASS.*FAIL.*SKIP|ok[[:space:]]+github.com/cilium/cilium/bpf/tests/bpftest' /tmp/bpf-egressgw-test.log; then
-            echo 'Could not find a recognizable BPF test summary in the output — treating as a failure' >&2
-            exit 1
-          fi
+          # NOTE: an exact `pass` count gate is added in the follow-up commit,
+          # pinned to the first receipt produced after the selection fix above.
+          # It is deliberately not guessed here: before this fix only one of the
+          # six objects ever ran, so no previously observed tally describes the
+          # real execution set.
 
       - name: Run CEGP validation and reconciliation regressions
         shell: bash
