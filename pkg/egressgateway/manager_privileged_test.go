@@ -82,6 +82,7 @@ const (
 
 	destCIDRv6        = "2001:db8::/64"
 	destCIDR3v6       = "2001:db8:3::/64"
+	mcastDestCIDRv6   = "ff3e::/16"
 	allZeroDestCIDRv6 = "::/0"
 	excludedCIDR1v6   = "2001:db8::22/128"
 	excludedCIDR2v6   = "2001:db8::f0/126"
@@ -308,12 +309,6 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
 	createTestInterface(t, k.sysctl, testInterface2, []string{egressCIDR2, egressCIDR2v6})
 
-	link, err := safenetlink.LinkByName(testInterface1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ifIndex1 := uint32(link.Attrs().Index)
-
 	policyMap4 := k.manager.policyMap4
 	policyMap6 := k.manager.policyMap6
 
@@ -358,7 +353,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep1IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Update the endpoint labels in order for it to not be a match
@@ -376,7 +371,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep1IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Changing the DestCIDR to 0.0.0.0 results in a conflict with
@@ -389,7 +384,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep1IP, allZeroDestCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, allZeroDestCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, allZeroDestCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Restore old DestCIDR
@@ -413,7 +408,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep1IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Add a new endpoint and ID which matches policy-2
@@ -425,7 +420,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep2IP, destCIDR, zeroIP4, node2IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 		{ep2IPv6, destCIDRv6, zeroIP6, node2IP, 0},
 	})
 
@@ -449,8 +444,8 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep2IP, destCIDR, zeroIP4, node2IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
-		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
+		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, 0},
 		{ep2IPv6, destCIDRv6, zeroIP6, node2IP, 0},
 	})
 
@@ -475,9 +470,9 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep2IP, destCIDR, zeroIP4, node2IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
-		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, ifIndex1},
-		{ep1IPv6, excludedCIDR2v6, egressIP1v6, gatewayExcludedCIDRValue, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
+		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, 0},
+		{ep1IPv6, excludedCIDR2v6, egressIP1v6, gatewayExcludedCIDRValue, 0},
 		{ep2IPv6, destCIDRv6, zeroIP6, node2IP, 0},
 	})
 
@@ -501,8 +496,8 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep2IP, destCIDR, zeroIP4, node2IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
-		{ep1IPv6, excludedCIDR2v6, egressIP1v6, gatewayExcludedCIDRValue, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
+		{ep1IPv6, excludedCIDR2v6, egressIP1v6, gatewayExcludedCIDRValue, 0},
 		{ep2IPv6, destCIDRv6, zeroIP6, node2IP, 0},
 	})
 
@@ -524,7 +519,7 @@ func TestPrivilegedEgressGatewayManager(t *testing.T) {
 		{ep2IP, destCIDR, zeroIP4, node2IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 		{ep2IPv6, destCIDRv6, zeroIP6, node2IP, 0},
 	})
 
@@ -591,12 +586,6 @@ func TestPrivilegedNodeSelector(t *testing.T) {
 
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
 
-	link, err := safenetlink.LinkByName(testInterface1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ifIndex1 := uint32(link.Attrs().Index)
-
 	policyMap4 := k.manager.policyMap4
 	policyMap6 := k.manager.policyMap6
 	egressGatewayManager := k.manager
@@ -649,7 +638,7 @@ func TestPrivilegedNodeSelector(t *testing.T) {
 		{ep2IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{ // This ep2 should match the policy-1
-		{ep2IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep2IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Produce a new endpoint ep3 similar to ep2 (and ep1) - with the same name & labels, but with a different IP address.
@@ -667,12 +656,6 @@ func TestPrivilegedEndpointDataStore(t *testing.T) {
 	k := setupEgressGatewayTestSuite(t)
 
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
-
-	link, err := safenetlink.LinkByName(testInterface1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ifIndex1 := uint32(link.Attrs().Index)
 
 	policyMap4 := k.manager.policyMap4
 	policyMap6 := k.manager.policyMap6
@@ -711,7 +694,7 @@ func TestPrivilegedEndpointDataStore(t *testing.T) {
 		{ep1IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Simulate statefulset pod migrations to a different node.
@@ -728,7 +711,7 @@ func TestPrivilegedEndpointDataStore(t *testing.T) {
 		{ep2IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep2IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep2IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 
 	// Produce a new endpoint ep3 similar to ep2 (and ep1) - with the same name & labels, but with a different IP address.
@@ -742,19 +725,20 @@ func TestPrivilegedEndpointDataStore(t *testing.T) {
 		{ep3IP, destCIDR, egressIP1, node1IP, 0},
 	})
 	assertEgressRules6(t, policyMap6, []egressRule{
-		{ep3IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep3IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
 	})
 }
 
 func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 	k := setupEgressGatewayTestSuite(t)
-	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1})
+	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
 
 	link, err := safenetlink.LinkByName(testInterface1)
 	require.NoError(t, err)
 	ifIndex1 := uint32(link.Attrs().Index)
 
 	policyMap4 := k.manager.policyMap4
+	policyMap6 := k.manager.policyMap6
 	egressGatewayManager := k.manager
 
 	k.policies.sync(t)
@@ -767,30 +751,30 @@ func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 	addPolicyAndReconcile(t, egressGatewayManager, k.policies, &policyParams{
 		name:             "policy-mcast",
 		endpointLabels:   ep1Labels,
-		destinationCIDRs: []string{mcastDestCIDR},
+		destinationCIDRs: []string{mcastDestCIDR, destCIDRv6, mcastDestCIDRv6},
+		excludedCIDRs:    []string{excludedCIDR1v6},
 		policyGwParams: []policyGatewayParams{{
 			nodeLabels: nodeGroup1Labels,
 			iface:      testInterface1,
 		}},
 	})
 
-	ep1, _ := newEndpointAndIdentity("ep-mcast", ep1IP, "", ep1Labels)
+	ep1, _ := newEndpointAndIdentity("ep-mcast", ep1IP, ep1IPv6, ep1Labels)
 	addEndpointAndReconcile(t, egressGatewayManager, k.endpoints, &ep1)
 
 	assertEgressRules4(t, policyMap4, []egressRule{
 		{ep1IP, mcastDestCIDR, egressIP1, node1IP, ifIndex1},
+	})
+	assertEgressRules6(t, policyMap6, []egressRule{
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, 0},
+		{ep1IPv6, mcastDestCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, 0},
 	})
 }
 
 func TestPrivilegedMultigatewayPolicy(t *testing.T) {
 	k := setupEgressGatewayTestSuite(t)
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
-
-	link, err := safenetlink.LinkByName(testInterface1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ifIndex1 := uint32(link.Attrs().Index)
 
 	policyMap4 := k.manager.policyMap4
 	policyMap6 := k.manager.policyMap6
@@ -917,7 +901,7 @@ func TestPrivilegedMultigatewayPolicy(t *testing.T) {
 	// Note that this is evaluated from the node1 perspective, so the entries for other nodes will
 	// have a zeroIP as EgressIP.
 	ipV4ExpectedpolicyMap := assignEndpoints(eps, nodes, 0, true)
-	ipV6ExpectedpolicyMap := assignEndpoints(eps, nodes, ifIndex1, false)
+	ipV6ExpectedpolicyMap := assignEndpoints(eps, nodes, 0, false)
 	assertEgressRules4(t, policyMap4, ipV4ExpectedpolicyMap)
 	assertEgressRules6(t, policyMap6, ipV6ExpectedpolicyMap)
 
@@ -947,7 +931,7 @@ func TestPrivilegedMultigatewayPolicy(t *testing.T) {
 	})
 	addPolicyAndReconcile(t, egressGatewayManager, k.policies, &policy1)
 	ipV4ExpectedpolicyMap = assignEndpoints(eps, nodes, 0, true)
-	ipV6ExpectedpolicyMap = assignEndpoints(eps, nodes, ifIndex1, false)
+	ipV6ExpectedpolicyMap = assignEndpoints(eps, nodes, 0, false)
 	assertEgressRules4(t, policyMap4, ipV4ExpectedpolicyMap)
 	assertEgressRules6(t, policyMap6, ipV6ExpectedpolicyMap)
 
@@ -961,7 +945,7 @@ func TestPrivilegedMultigatewayPolicy(t *testing.T) {
 		ipV6ExpectedpolicyMap[i].gatewayIP = nodes[0].ip
 	}
 	assertEgressRules4(t, policyMap4, assignEndpoints(eps, nodes[:1], 0, true))
-	assertEgressRules6(t, policyMap6, assignEndpoints(eps, nodes[:1], ifIndex1, false))
+	assertEgressRules6(t, policyMap6, assignEndpoints(eps, nodes[:1], 0, false))
 }
 
 func TestCell(t *testing.T) {
