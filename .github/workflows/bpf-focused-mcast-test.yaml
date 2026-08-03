@@ -3,6 +3,7 @@ name: Multicast EGW Regression Test
 on:
   pull_request:
     branches:
+      - master
       - feat/l2fix-mcast-v3-sip-egress
     paths:
       - '.github/workflows/bpf-focused-mcast-test.yaml'
@@ -105,27 +106,41 @@ jobs:
           fi
           echo "BPF receipt: PASS=${pass} FAIL=${fail} SKIP=${skip}"
 
-          if [ "${fail}" -ne 0 ] || [ "${skip}" -ne 0 ]; then
-            echo "BPF egress gateway tests reported failures/skips (FAIL=${fail} SKIP=${skip})" >&2
+          if [ "${pass}" -ne 49 ] || [ "${fail}" -ne 0 ] || [ "${skip}" -ne 0 ]; then
+            echo "Unexpected BPF egress gateway receipt (expected PASS=49 FAIL=0 SKIP=0; got PASS=${pass} FAIL=${fail} SKIP=${skip})" >&2
             exit 1
           fi
-
-          # NOTE: an exact `pass` count gate is added in the follow-up commit,
-          # pinned to the first receipt produced after the selection fix above.
-          # It is deliberately not guessed here: before this fix only one of the
-          # six objects ever ran, so no previously observed tally describes the
-          # real execution set.
 
       - name: Run CEGP validation and reconciliation regressions
         shell: bash
         run: |
           set -o pipefail
+
+          REQUIRED_GO_TESTS=(
+            TestParseCEGPMulticastDestinationCIDRs
+            TestPrivilegedEgressGatewayCEGPParser
+            TestPrivilegedEgressGatewayManager
+            TestPrivilegedMulticastEgressGatewayManager
+          )
+          test_pattern=$(IFS='|'; echo "${REQUIRED_GO_TESTS[*]}")
+
           sudo -E env "PATH=$PATH" PRIVILEGED_TESTS=1 \
             go test -v -count=1 -timeout=10m ./pkg/egressgateway \
-            -run '^(TestParseCEGPMulticastDestinationCIDRs|TestPrivilegedEgressGatewayCEGPParser|TestPrivilegedEgressGatewayManager|TestPrivilegedMulticastEgressGatewayManager)$' \
+            -run "^(${test_pattern})$" \
             | tee /tmp/multicast-egw-go-test.log
 
           if grep -q -- '--- SKIP:' /tmp/multicast-egw-go-test.log; then
             echo 'Privileged reconciliation test unexpectedly skipped' >&2
             exit 1
           fi
+
+          missing=()
+          for test_name in "${REQUIRED_GO_TESTS[@]}"; do
+            grep -Eq -- "^--- PASS: ${test_name}( |$)" /tmp/multicast-egw-go-test.log \
+              || missing+=("${test_name}")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "Required Go tests did not report PASS: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Verified all ${#REQUIRED_GO_TESTS[@]} required Go tests executed and passed."
