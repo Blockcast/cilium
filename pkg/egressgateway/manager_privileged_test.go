@@ -751,13 +751,20 @@ func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 	addPolicyAndReconcile(t, egressGatewayManager, k.policies, &policyParams{
 		name:             "policy-mcast",
 		endpointLabels:   ep1Labels,
-		destinationCIDRs: []string{mcastDestCIDR, destCIDRv6, mcastDestCIDRv6},
+		destinationCIDRs: []string{mcastDestCIDR, destCIDRv6},
 		excludedCIDRs:    []string{excludedCIDR1v6},
 		policyGwParams: []policyGatewayParams{{
 			nodeLabels: nodeGroup1Labels,
 			iface:      testInterface1,
 		}},
 	})
+
+	// IPv6 multicast CEGPs are not accepted by the parser yet. Inject the
+	// prefix into the internal policy to cover the IPv6 map writer contract.
+	require.Len(t, egressGatewayManager.policyConfigs, 1)
+	for _, config := range egressGatewayManager.policyConfigs {
+		config.dstCIDRs = append(config.dstCIDRs, netip.MustParsePrefix(mcastDestCIDRv6))
+	}
 
 	ep1, _ := newEndpointAndIdentity("ep-mcast", ep1IP, ep1IPv6, ep1Labels)
 	addEndpointAndReconcile(t, egressGatewayManager, k.endpoints, &ep1)
