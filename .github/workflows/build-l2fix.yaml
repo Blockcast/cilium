@@ -1,3 +1,22 @@
+# Builds the Blockcast L2-fix / multicast Cilium image and pushes it to
+# registry.blockcast.net.
+#
+# Registry auth: registry.blockcast.net has been Harbor since the 2026-05-17
+# zot -> Harbor cutover. The pre-cutover zot htpasswd pair
+# (`ci-cache` + `LOCAL_REGISTRY_PASSWORD`) no longer authenticates and is not
+# coming back; the org-wide post-cutover pair is
+# `HARBOR_USERNAME` + `HARBOR_PASSWORD`, exercised hourly by
+# Blockcast/onprem-k8s `.github/workflows/canary-local-registry-login.yaml`.
+# Do not reintroduce the zot pair here.
+#
+# Source ref: this workflow file lives only on the default branch, so the
+# dispatch ref selects the *workflow*, not the source. `source_ref` selects the
+# source explicitly. It used to be hard-pinned to the prototype branch
+# `fix/l2-responder-stale-vip-cleanup`, which silently built the wrong tree.
+# `source_ref` therefore carries NO default: a dispatch that omits it must fail
+# loudly rather than fall back to whichever branch was current when this file
+# was last edited. Prefer an immutable commit SHA.
+
 name: Build L2 Fix Image
 
 on:
@@ -7,6 +26,9 @@ on:
         description: 'Image tag'
         required: true
         default: 'v1.19.1-l2fix'
+      source_ref:
+        description: 'Git ref (branch, tag, or commit SHA) to build'
+        required: true
 
 permissions:
   contents: read
@@ -20,8 +42,15 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          ref: fix/l2-responder-stale-vip-cleanup
+          ref: ${{ github.event.inputs.source_ref }}
           persist-credentials: false
+
+      - name: Record build source
+        run: |
+          set -euo pipefail
+          echo "requested source_ref: ${{ github.event.inputs.source_ref }}"
+          echo "resolved commit:      $(git rev-parse HEAD)"
+          git log --oneline -1
 
       - name: Free disk space
         run: |
@@ -35,8 +64,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: registry.blockcast.net
-          username: ci-cache
-          password: ${{ secrets.LOCAL_REGISTRY_PASSWORD }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
       - name: Build and Push cilium agent
         uses: docker/build-push-action@v6
