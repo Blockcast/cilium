@@ -13,6 +13,9 @@
 # dispatch ref selects the *workflow*, not the source. `source_ref` selects the
 # source explicitly. It used to be hard-pinned to the prototype branch
 # `fix/l2-responder-stale-vip-cleanup`, which silently built the wrong tree.
+# `source_ref` therefore carries NO default: a dispatch that omits it must fail
+# loudly rather than fall back to whichever branch was current when this file
+# was last edited. Prefer an immutable commit SHA.
 
 name: Build L2 Fix Image
 
@@ -26,7 +29,6 @@ on:
       source_ref:
         description: 'Git ref (branch, tag, or commit SHA) to build'
         required: true
-        default: 'feat/multicast-egw-cegp-downstream'
 
 permissions:
   contents: read
