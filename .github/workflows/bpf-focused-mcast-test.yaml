@@ -1,24 +1,28 @@
-name: BPF Focused Multicast EGW Test
+name: Multicast EGW Regression Test
 
 on:
+  pull_request:
+    branches:
+      - master
+      - feat/l2fix-mcast-v3-sip-egress
+    paths:
+      - '.github/workflows/bpf-focused-mcast-test.yaml'
+      - 'bpf/**'
+      - 'pkg/egressgateway/**'
+      - 'pkg/maps/egressmap/**'
   workflow_dispatch:
-    inputs:
-      bpf_test:
-        description: 'BPF test name (without .c extension)'
-        required: false
-        default: 'tc_egressgw_redirect_multicast'
 
 permissions: read-all
 
 jobs:
-  bpf_focused_test:
-    name: BPF Focused Multicast EGW Test
+  multicast_egw_regression:
+    name: BPF and Go multicast EGW regression
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: feat/multicast-egw-cegp-downstream
           persist-credentials: false
           fetch-depth: 0
 
@@ -39,8 +43,104 @@ jobs:
         run: |
           pip3 install --quiet scapy Jinja2
 
-      - name: Run focused BPF test
+      - name: Run multicast and unicast CEGP BPF regressions
+        shell: bash
         run: |
+          set -o pipefail
+
+          # Every object that must actually execute in this receipt: the two
+          # multicast cases plus the pre-existing unicast CEGP regressions.
+          REQUIRED_OBJECTS=(
+            tc_egressgw_origin_node_multicast
+            tc_egressgw_redirect_multicast
+            tc_egressgw_redirect_from_host
+            tc_egressgw_redirect_from_overlay
+            tc_egressgw_redirect_from_overlay_with_egress_interface
+            tc_egressgw_snat
+          )
+
+          # Remove any pre-existing objects so the post-run assertion below
+          # proves that *this* invocation compiled and selected each one.
+          rm -f bpf/tests/tc_egressgw_*.o
+
           make run_bpf_tests \
-            BPF_TEST="${{ github.event.inputs.bpf_test || 'tc_egressgw_redirect_multicast' }}" \
-            BPF_TEST_VERBOSE=1
+            BPF_TEST='tc_egressgw' \
+            BPF_TEST_VERBOSE=1 \
+            | tee /tmp/bpf-egressgw-test.log
+
+          # Fail closed on the execution set rather than on source presence.
+          # bpftest enumerates the *.o files under -bpf-test-path and runs every
+          # one whose name carries the -test prefix, so an object built here is
+          # an object that ran. Asserting on built objects (not .c sources) is
+          # what catches a selection regression: BPF_TEST previously expanded to
+          # `grep tc_egressgw.o`, whose unescaped '.' matched only
+          # tc_egressgw_origin_node_multicast.o, so five of these six never
+          # compiled and never ran while the job still reported success.
+          missing=()
+          for obj in "${REQUIRED_OBJECTS[@]}"; do
+            [ -f "bpf/tests/${obj}.o" ] || missing+=("${obj}")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "These BPF test objects were not built, so they did not run: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Verified all ${#REQUIRED_OBJECTS[@]} required tc_egressgw BPF objects were built and executed."
+
+          # Parse the tparse summary row for this package and require a tally.
+          # A missing/unparseable row is itself a failure, so a change in the
+          # runner's output shape can never silently degrade into a pass.
+          # Columns are: STATUS | ELAPSED | PACKAGE | COVER | PASS | FAIL | SKIP
+          # `read` returns non-zero on empty input; swallow that so the explicit
+          # validation below reports the problem instead of `set -e` aborting
+          # with no context.
+          read -r pass fail skip < <(
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/bpf-egressgw-test.log \
+              | awk -F'│' '/github.com\/cilium\/cilium\/bpf\/tests\/bpftest/ && NF >= 9 {
+                  for (i = 6; i <= 8; i++) gsub(/^ +| +$/, "", $i);
+                  print $6, $7, $8; exit
+                }'
+          ) || true
+          if ! [[ "${pass}" =~ ^[0-9]+$ && "${fail}" =~ ^[0-9]+$ && "${skip}" =~ ^[0-9]+$ ]]; then
+            echo "Could not parse a numeric BPF test summary row (got pass='${pass}' fail='${fail}' skip='${skip}') — treating as a failure" >&2
+            exit 1
+          fi
+          echo "BPF receipt: PASS=${pass} FAIL=${fail} SKIP=${skip}"
+
+          if [ "${pass}" -ne 49 ] || [ "${fail}" -ne 0 ] || [ "${skip}" -ne 0 ]; then
+            echo "Unexpected BPF egress gateway receipt (expected PASS=49 FAIL=0 SKIP=0; got PASS=${pass} FAIL=${fail} SKIP=${skip})" >&2
+            exit 1
+          fi
+
+      - name: Run CEGP validation and reconciliation regressions
+        shell: bash
+        run: |
+          set -o pipefail
+
+          REQUIRED_GO_TESTS=(
+            TestParseCEGPMulticastDestinationCIDRs
+            TestPrivilegedEgressGatewayCEGPParser
+            TestPrivilegedEgressGatewayManager
+            TestPrivilegedMulticastEgressGatewayManager
+          )
+          test_pattern=$(IFS='|'; echo "${REQUIRED_GO_TESTS[*]}")
+
+          sudo -E env "PATH=$PATH" PRIVILEGED_TESTS=1 \
+            go test -v -count=1 -timeout=10m ./pkg/egressgateway \
+            -run "^(${test_pattern})$" \
+            | tee /tmp/multicast-egw-go-test.log
+
+          if grep -q -- '--- SKIP:' /tmp/multicast-egw-go-test.log; then
+            echo 'Privileged reconciliation test unexpectedly skipped' >&2
+            exit 1
+          fi
+
+          missing=()
+          for test_name in "${REQUIRED_GO_TESTS[@]}"; do
+            grep -Eq -- "^--- PASS: ${test_name}( |$)" /tmp/multicast-egw-go-test.log \
+              || missing+=("${test_name}")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "Required Go tests did not report PASS: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Verified all ${#REQUIRED_GO_TESTS[@]} required Go tests executed and passed."
