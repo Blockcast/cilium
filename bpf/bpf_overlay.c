@@ -356,18 +356,42 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 	{
 		__u32 egress_ifindex = 0;
 		__be32 snat_addr, daddr;
+		__be32 saddr;
+		__u8 nexthdr;
+		int l4_off;
+		fraginfo_t mcast_fraginfo;
 
+		saddr = ip4->saddr;
 		daddr = ip4->daddr;
+		nexthdr = ip4->protocol;
+		l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
+		mcast_fraginfo = ipfrag_encode_ipv4(ip4);
+
 		if (egress_gw_snat_needed_hook(ip4->saddr, daddr, &snat_addr,
 					       &egress_ifindex)) {
 			__u32 tbid = EGRESS_GATEWAY_RT_TBID;
 
 			if (snat_addr == EGRESS_GATEWAY_NO_EGRESS_IP)
 				return DROP_NO_EGRESS_IP;
+			if (egw_ipv4_is_mcast(daddr) && !egress_ifindex)
+				return DROP_NO_FIB;
 
 			ret = ipv4_l3(ctx, ETH_HLEN, NULL, NULL, ip4);
 			if (unlikely(ret != CTX_ACT_OK))
 				return ret;
+
+			/* Multicast has no reply path and never reaches
+			 * to-netdev@bpf_host's SNAT, so rewrite the source here.
+			 */
+			if (egw_ipv4_is_mcast(daddr)) {
+				ret = snat_v4_rewrite_headers(ctx, nexthdr, ETH_HLEN,
+							      ipfrag_has_l4_header(mcast_fraginfo),
+							      l4_off, saddr, snat_addr,
+							      offsetof(struct iphdr, saddr), 0,
+							      0, 0, 0);
+				if (unlikely(ret < 0))
+					return ret;
+			}
 
 			set_identity_mark(ctx, *identity, MARK_MAGIC_EGW_DONE);
 
