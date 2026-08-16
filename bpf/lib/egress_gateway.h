@@ -14,6 +14,14 @@
 #define EGRESS_GATEWAY_RT_TBID	0
 #endif
 
+/* Multicast destination predicates. Operate on network-byte-order addresses
+ * so the high-byte mask is constant-folded and no runtime bswap is needed
+ * on the unicast hot path.
+ */
+#define egw_ipv4_is_mcast(daddr)					\
+	(((daddr) & bpf_htonl(0xF0000000U)) == bpf_htonl(0xE0000000U))
+#define egw_ipv6_is_mcast(daddr) ((daddr)->addr[0] == 0xffU)
+
 struct egress_gw_policy_key {
 	struct bpf_lpm_trie_key lpm_key;
 	__be32 saddr;
@@ -105,6 +113,12 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 	struct bpf_fib_lookup_padded fib_params = {};
 	int flags = 0;
 	int ret;
+
+	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
+	 * handles L2 distribution. Requires the policy to set egress_ifindex.
+	 */
+	if (egress_ifindex && egw_ipv4_is_mcast(daddr))
+		return ctx_redirect(ctx, egress_ifindex, 0);
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
 	 * Fall back to FIB lookup on older kernels.
@@ -326,6 +340,13 @@ static __always_inline
 int egress_gw_handle_packet(struct ipv4_ct_tuple *tuple,
 			    __u32 dst_sec_identity, __be32 *gateway_ip)
 {
+	/* Multicast destinations are external by definition; force WORLD_ID so
+	 * a stale ipcache "cluster" identity can't short-circuit the EGW path.
+	 * tuple is reversed by the caller — original daddr lives in saddr.
+	 */
+	if (egw_ipv4_is_mcast(tuple->saddr))
+		dst_sec_identity = WORLD_ID;
+
 	/* If the packet is destined to an entity inside the cluster,
 	 * either EP or node, it should not be forwarded to an egress
 	 * gateway since only traffic leaving the cluster is supposed to
@@ -464,6 +485,10 @@ int egress_gw_fib_lookup_and_redirect_v6(struct __ctx_buff *ctx,
 	struct bpf_fib_lookup_padded *fib_params = AUX(fib_params_storage);
 	int ret, flags = 0;
 
+	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4. */
+	if (egress_ifindex && egw_ipv6_is_mcast(daddr))
+		return ctx_redirect(ctx, egress_ifindex, 0);
+
 	if (egress_ifindex && neigh_resolver_without_nh_available()) {
 		/* Can't use redirect_neigh() when
 		 * - custom routing table is needed, or
@@ -523,6 +548,10 @@ static __always_inline
 int egress_gw_handle_packet_v6(struct ipv6_ct_tuple *tuple,
 			       __u32 dst_sec_identity, __be32 *gateway_ip)
 {
+	/* See IPv4 counterpart: force WORLD_ID for multicast destinations. */
+	if (egw_ipv6_is_mcast(&tuple->saddr))
+		dst_sec_identity = WORLD_ID;
+
 	/* If the packet is destined to an entity inside the cluster,
 	 * either EP or node, it should not be forwarded to an egress
 	 * gateway since only traffic leaving the cluster is supposed to
@@ -660,3 +689,76 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
 }
 
 #endif /* ENABLE_EGRESS_GATEWAY_COMMON */
+
+/* egw_mcast_request_is_egress - origin-node classification for pod-originated
+ * IPv4 multicast (BLO-8007, downstream-only).
+ *
+ * Returns true when @daddr is a multicast destination that matches a multicast
+ * EgressGatewayPolicy with a real gateway, i.e. the packet must leave the node
+ * via the egress gateway instead of the cluster-internal multicast fast path.
+ *
+ * Returns false for non-multicast destinations, for multicast with no matching
+ * policy (or an excluded-CIDR / no-gateway policy), and when EGW is compiled
+ * out. In every false case the caller keeps the pre-existing behavior, so this
+ * helper can only ever *divert* a multicast destination that an operator has
+ * explicitly placed under a policy - it never changes unicast handling.
+ *
+ * Deliberately defined OUTSIDE the ENABLE_EGRESS_GATEWAY_COMMON block above,
+ * because its caller in bpf_lxc.c sits under ENABLE_MULTICAST, which is an
+ * independent feature flag: the agent emits ENABLE_MULTICAST from
+ * MulticastEnabled (pkg/maps/multicast/subscribermap.go), while
+ * ENABLE_EGRESS_GATEWAY_COMMON is derived from ENABLE_EGRESS_GATEWAY in
+ * bpf/lib/common.h. Multicast-on/EGW-off is therefore a real build config, and
+ * with this helper inside the block it would not exist there at all. Keeping it
+ * out here means the #else stub below is always available, so that config keeps
+ * compiling and keeps its pre-existing local-delivery behavior. Note the
+ * implication only runs one way (EGW => EGW_COMMON), so when EGW_COMMON is
+ * undefined ENABLE_EGRESS_GATEWAY is undefined too and the stub references
+ * none of the policy-map helpers above.
+ *
+ * Downstream divergence from upstream Cilium: upstream never consults the EGW
+ * policy map for multicast destinations because the from-container path short-
+ * circuits IN_MULTICAST traffic to local delivery before any EGW lookup can
+ * run. We deliberately add this multicast-only lookup on the origin node so
+ * multicast CEGP hits are classified before local emission. The unicast
+ * gateway_ip sentinels (NO_GATEWAY / EXCLUDED_CIDR) are honored unchanged.
+ *
+ * 1.20 note: probes the v2 policy map first and falls back to v1, mirroring
+ * egress_gw_request_needs_redirect(). Only gateway_ip is read, which sits at
+ * the same offset in both entry layouts, so the v1 cast is safe. That safety
+ * argument is per-field, not general: if this path is ever changed to read a
+ * v2-only field such as egress_ifindex, the v1 cast must be revisited and the
+ * two layouts handled separately.
+ */
+static __always_inline bool
+egw_mcast_request_is_egress(__be32 saddr __maybe_unused, __be32 daddr __maybe_unused)
+{
+#if defined(ENABLE_EGRESS_GATEWAY)
+	const struct egress_gw_policy_entry_v2 *egress_gw_policy_v2;
+	const struct egress_gw_policy_entry *egress_gw_policy;
+
+	if (!egw_ipv4_is_mcast(daddr))
+		return false;
+
+	egress_gw_policy_v2 = lookup_ip4_egress_gw_policy_v2(saddr, daddr);
+	if (egress_gw_policy_v2) {
+		egress_gw_policy = (struct egress_gw_policy_entry *)egress_gw_policy_v2;
+		goto evaluate_policy;
+	}
+
+	egress_gw_policy = lookup_ip4_egress_gw_policy(saddr, daddr);
+	if (!egress_gw_policy)
+		return false;
+
+evaluate_policy:
+	switch (egress_gw_policy->gateway_ip) {
+	case EGRESS_GATEWAY_NO_GATEWAY:
+	case EGRESS_GATEWAY_EXCLUDED_CIDR:
+		return false;
+	}
+
+	return true;
+#else
+	return false;
+#endif /* ENABLE_EGRESS_GATEWAY */
+}

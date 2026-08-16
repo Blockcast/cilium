@@ -1,0 +1,211 @@
+name: Multicast EGW Regression Test
+
+on:
+  pull_request:
+    branches:
+      - master
+      - omar/l2fix-1.20-port
+      - feat/l2fix-mcast-v3-sip-egress
+    paths:
+      - '.github/workflows/bpf-focused-mcast-test.yaml'
+      - 'bpf/**'
+      - 'pkg/egressgateway/**'
+      - 'pkg/maps/egressmap/**'
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  multicast_egw_regression:
+    name: BPF and Go multicast EGW regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Git status and log
+        run: |
+          echo "=== git status ==="
+          git status --short --branch
+          echo ""
+          echo "=== git log ==="
+          git log --oneline -5
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install Python deps for Scapy packet generation
+        run: |
+          pip3 install --quiet scapy Jinja2
+
+      - name: Run multicast and unicast CEGP BPF regressions
+        shell: bash
+        run: |
+          set -o pipefail
+
+          # Every object that must actually execute in this receipt: the two
+          # multicast cases plus the pre-existing unicast CEGP regressions.
+          #
+          # 1.20 note: the 1.19.3 line carried
+          # tc_egressgw_redirect_from_overlay_with_egress_interface. On the 1.20
+          # l2fix line that test is instead
+          # tc_egressgw_redirect_from_overlay_with_rt_info, matching the tbid /
+          # routing-table argument that 1.20 added to
+          # egress_gw_fib_lookup_and_redirect(). Same slot in the matrix, new
+          # name -- so the required-object list below is NOT a verbatim copy of
+          # the 1.19.3 one.
+          REQUIRED_OBJECTS=(
+            tc_egressgw_origin_node_multicast
+            tc_egressgw_redirect_multicast
+            tc_egressgw_redirect_from_host
+            tc_egressgw_redirect_from_overlay
+            tc_egressgw_redirect_from_overlay_with_rt_info
+            tc_egressgw_snat
+          )
+
+          # Expected passing tally for the tc_egressgw BPF matrix.
+          #
+          # 48, measured on this line (run 31950287166), not inherited. The
+          # 1.19.3 receipt was 49; the single-case difference is entirely the
+          # renamed overlay test -- 1.19.3's
+          # tc_egressgw_redirect_from_overlay_with_egress_interface carried 3
+          # entries, 1.20's tc_egressgw_redirect_from_overlay_with_rt_info
+          # carries 2.
+          #
+          # This counts program nodes AND case leaves (see the grep comment
+          # below), so per object it is (number of CHECK programs) + (number
+          # of TEST blocks). Breakdown at the time of pinning:
+          #
+          #   object                                          CHECK TEST  =
+          #   tc_egressgw_origin_node_multicast                   1    5    6
+          #   tc_egressgw_redirect_from_host                      -    -   14
+          #   tc_egressgw_redirect_from_overlay                   -    -   10
+          #   tc_egressgw_redirect_from_overlay_with_rt_info      -    -    2
+          #   tc_egressgw_redirect_multicast                      2    0    2
+          #   tc_egressgw_snat                                    -    -   14
+          #
+          # Note the multicast contribution of 8 is 3 program nodes plus 5
+          # real assertions: tc_egressgw_redirect_multicast currently has two
+          # CHECK programs and no TEST blocks, so it contributes group nodes
+          # only. Adding TEST blocks there would strengthen the receipt and
+          # move this constant -- see BLO-27475.
+          #
+          # Re-pin deliberately, citing the CI run, whenever a tc_egressgw
+          # CHECK program or TEST block is added, removed, or reworked.
+          EXPECTED_BPF_PASS=48
+
+          # Remove any pre-existing objects so the post-run assertion below
+          # proves that *this* invocation compiled and selected each one.
+          rm -f bpf/tests/tc_egressgw_*.o
+
+          make run_bpf_tests \
+            BPF_TEST='tc_egressgw' \
+            V=1 \
+            | tee /tmp/bpf-egressgw-test.log
+
+          # Fail closed on the execution set rather than on source presence.
+          # bpftest enumerates the *.o files under -bpf-test-path and runs every
+          # one whose name carries the -test prefix, so an object built here is
+          # an object that ran. Asserting on built objects (not .c sources) is
+          # what catches a selection regression: BPF_TEST previously expanded to
+          # `grep tc_egressgw.o`, whose unescaped '.' matched only
+          # tc_egressgw_origin_node_multicast.o, so five of these six never
+          # compiled and never ran while the job still reported success.
+          missing=()
+          for obj in "${REQUIRED_OBJECTS[@]}"; do
+            [ -f "bpf/tests/${obj}.o" ] || missing+=("${obj}")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "These BPF test objects were not built, so they did not run: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Verified all ${#REQUIRED_OBJECTS[@]} required tc_egressgw BPF objects were built and executed."
+
+          # Tally the receipt from `go test -test.v` output directly.
+          #
+          # The 1.19.3 workflow parsed a tparse summary table. That does not
+          # exist on this line: Makefile.defs sets `GOTEST_FORMATTER ?= cat`,
+          # so run_bpf_tests pipes plain `go test` output. It also keys
+          # verbosity on `V=1` (`$(and $(filter 1,$(V)),-test.v)`), where the
+          # 1.19.3 Makefile mapped BPF_TEST_VERBOSE onto V -- so the old
+          # invocation produced neither per-test lines nor a table, and the
+          # table parser failed closed with an empty tally. Counting the
+          # `--- PASS/FAIL/SKIP:` lines is formatter-independent and cannot be
+          # silently degraded by a formatter change.
+          # PASS counts the two inner tiers of the bpftest tree: program nodes
+          # and case leaves. bpftest nests three levels of t.Run --
+          # per-object (bpf_test.go:112), per-program (:276), per-case (:555)
+          # -- giving `TestBPF/<object>.o/<program>[/<case>]`. The grep below
+          # is unanchored after `.o/`, so it matches both the depth-3 program
+          # nodes and the depth-4 case leaves, and excludes only the bare
+          # TestBPF root and the six per-object nodes. That is deliberate:
+          # counting program nodes catches deletion of a CHECK program inside
+          # an object, which the REQUIRED_OBJECTS check above cannot see.
+          # It is NOT a count of assertions alone -- see the table above.
+          # FAIL/SKIP stay unqualified so a failure at any level is caught
+          # (a failing leaf also fails its program, object and root; the
+          # assertion is != 0, so the multiple-counting is harmless).
+          pass=$(grep -cE '^[[:space:]]*--- PASS: TestBPF/[^/]+\.o/' /tmp/bpf-egressgw-test.log || true)
+          fail=$(grep -cE '^[[:space:]]*--- FAIL: ' /tmp/bpf-egressgw-test.log || true)
+          skip=$(grep -cE '^[[:space:]]*--- SKIP: ' /tmp/bpf-egressgw-test.log || true)
+
+          # A run that produced no per-test lines at all means -test.v did not
+          # take effect; treat that as a failure rather than as PASS=0.
+          if [ "$((pass + fail + skip))" -eq 0 ]; then
+            echo "No '--- PASS/FAIL/SKIP:' lines in the test log — verbose output did not take effect, so the tally cannot be trusted" >&2
+            exit 1
+          fi
+
+          # And require the package itself to have reported ok, so a tally
+          # cannot stand in for an actually-passing package.
+          if ! grep -qE '^ok[[:space:]]+github\.com/cilium/cilium/bpf/tests/bpftest' /tmp/bpf-egressgw-test.log; then
+            echo "bpftest package did not report ok" >&2
+            exit 1
+          fi
+
+          echo "BPF receipt: PASS=${pass} FAIL=${fail} SKIP=${skip}"
+
+          if [ "${pass}" -ne "${EXPECTED_BPF_PASS}" ] || [ "${fail}" -ne 0 ] || [ "${skip}" -ne 0 ]; then
+            echo "Unexpected BPF egress gateway receipt (expected PASS=${EXPECTED_BPF_PASS} FAIL=0 SKIP=0; got PASS=${pass} FAIL=${fail} SKIP=${skip})" >&2
+            exit 1
+          fi
+
+      - name: Run CEGP validation and reconciliation regressions
+        shell: bash
+        run: |
+          set -o pipefail
+
+          REQUIRED_GO_TESTS=(
+            TestParseCEGPMulticastDestinationCIDRs
+            TestPrivilegedEgressGatewayCEGPParser
+            TestPrivilegedEgressGatewayManager
+            TestPrivilegedMulticastEgressGatewayManager
+          )
+          test_pattern=$(IFS='|'; echo "${REQUIRED_GO_TESTS[*]}")
+
+          sudo -E env "PATH=$PATH" PRIVILEGED_TESTS=1 \
+            go test -v -count=1 -timeout=10m ./pkg/egressgateway \
+            -run "^(${test_pattern})$" \
+            | tee /tmp/multicast-egw-go-test.log
+
+          if grep -q -- '--- SKIP:' /tmp/multicast-egw-go-test.log; then
+            echo 'Privileged reconciliation test unexpectedly skipped' >&2
+            exit 1
+          fi
+
+          missing=()
+          for test_name in "${REQUIRED_GO_TESTS[@]}"; do
+            grep -Eq -- "^--- PASS: ${test_name}( |$)" /tmp/multicast-egw-go-test.log \
+              || missing+=("${test_name}")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "Required Go tests did not report PASS: ${missing[*]}" >&2
+            exit 1
+          fi
+          echo "Verified all ${#REQUIRED_GO_TESTS[@]} required Go tests executed and passed."

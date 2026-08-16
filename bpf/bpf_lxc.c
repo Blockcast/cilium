@@ -51,6 +51,87 @@
 #include "lib/policy_log.h"
 #include "lib/vtep.h"
 #include "lib/subnet.h"
+#include "lib/egress_gateway.h"
+
+/* egress_gw_mcast_pod_egress — V3 (BLO-3293). Pod-side multicast intercept
+ * for the egress-gateway feature. Placed locally in bpf_lxc.c so that the
+ * include-order requirement (nat.h before us, for snat_v4_*) is satisfied
+ * here without polluting lib/egress_gateway.h's surface (which is also
+ * pulled into bpf_overlay.c, which doesn't include nat.h).
+ *
+ * Behaviour:
+ *   - No CEGP entry for (saddr, daddr): CTX_ACT_OK (caller falls through to
+ *     standard datapath; under ENABLE_HOST_ROUTING that means fib_redirect_v4
+ *     out the direct-routing dev with no SNAT — same as today).
+ *   - Policy says NO_GATEWAY: DROP_NO_EGRESS_GATEWAY.
+ *   - Policy says EXCLUDED_CIDR: CTX_ACT_OK (fall through unchanged).
+ *   - Policy points at remote node (gateway_ip != IPV4_DIRECT_ROUTING):
+ *     DROP_NO_EGRESS_GATEWAY. Cross-node mcast deferred to V4.
+ *   - Policy points at this node: SNAT inner src to policy->egress_ip,
+ *     ctx_redirect to direct_routing_dev_ifindex. Kernel handles the L2
+ *     mcast MAC at xmit; no FIB / neighbour lookup. No CT entry (multicast
+ *     has no reply path).
+ *
+ * Caller MUST revalidate the data pointer after this returns CTX_ACT_OK,
+ * because snat_v4_rewrite_headers internally calls ctx_store_bytes which
+ * the verifier treats as potentially invalidating ip4 across path-merge —
+ * even though the CTX_ACT_OK fall-through never reaches snat at runtime.
+ *
+ * 1.20 note: probes the v2 policy map first and falls back to v1. Only
+ * gateway_ip (offset 4) and egress_ip (offset 0) are read, and both sit at
+ * the same offset in either entry layout, so the v1 cast is safe. That
+ * argument holds per-field, not in general: egress_ifindex exists only in the
+ * v2 layout, so if this path is ever changed to read it (or any other v2-only
+ * field) the v1 cast stops being safe and the two layouts must be handled
+ * separately rather than through the downcast at the top of this function.
+ */
+static __always_inline int
+egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
+			   struct iphdr *ip4 __maybe_unused)
+{
+#if defined(ENABLE_EGRESS_GATEWAY)
+	const struct egress_gw_policy_entry_v2 *policy_v2;
+	const struct egress_gw_policy_entry *policy;
+	fraginfo_t fraginfo;
+	int l4_off, ret;
+
+	policy_v2 = lookup_ip4_egress_gw_policy_v2(ip4->saddr, ip4->daddr);
+	if (policy_v2) {
+		policy = (struct egress_gw_policy_entry *)policy_v2;
+		goto evaluate_policy;
+	}
+
+	policy = lookup_ip4_egress_gw_policy(ip4->saddr, ip4->daddr);
+	if (!policy)
+		return CTX_ACT_OK;
+
+evaluate_policy:
+	switch (policy->gateway_ip) {
+	case EGRESS_GATEWAY_NO_GATEWAY:
+		return DROP_NO_EGRESS_GATEWAY;
+	case EGRESS_GATEWAY_EXCLUDED_CIDR:
+		return CTX_ACT_OK;
+	}
+
+	if (policy->gateway_ip != IPV4_DIRECT_ROUTING)
+		return DROP_NO_EGRESS_GATEWAY;
+
+	fraginfo = ipfrag_encode_ipv4(ip4);
+	l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
+
+	ret = snat_v4_rewrite_headers(ctx, ip4->protocol, ETH_HLEN,
+				      ipfrag_has_l4_header(fraginfo), l4_off,
+				      ip4->saddr, policy->egress_ip,
+				      offsetof(struct iphdr, saddr),
+				      0, 0, 0, 0);
+	if (IS_ERR(ret))
+		return ret;
+
+	return ctx_redirect(ctx, CONFIG(direct_routing_dev_ifindex), 0);
+#else
+	return CTX_ACT_OK;
+#endif /* ENABLE_EGRESS_GATEWAY */
+}
 
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 static __always_inline int
@@ -1286,6 +1367,31 @@ ipv4_forward_to_destination(struct __ctx_buff *ctx, struct iphdr *ip4,
 	}
 #endif
 
+	/* V3 (BLO-3293): pod-side multicast intercept for the egress
+	 * gateway feature. Runs before TUNNEL_MODE / ENABLE_HOST_ROUTING so
+	 * that pod multicast traffic matched by a CEGP gets SNAT'd and
+	 * redirected to the direct-routing dev locally — instead of being
+	 * fast-pathed via fib_redirect_v4 with the pod IP as src (which
+	 * upstream switches drop as RPF-failed) and bypassing the bpf_host
+	 * egress hook chain entirely. The mcast-only gate keeps unicast
+	 * traffic on its zero-cost path.
+	 */
+	if (egw_ipv4_is_mcast(ip4->daddr)) {
+		void *data, *data_end;
+
+		ret = egress_gw_mcast_pod_egress(ctx, ip4);
+		if (ret != CTX_ACT_OK)
+			return ret;
+
+		/* Helper may have invalidated ip4 via ctx_store_bytes on the
+		 * snat-and-redirect path. The verifier doesn't track that the
+		 * CTX_ACT_OK fall-through never reaches snat, and conservatively
+		 * marks ip4 invalid post-call. Revalidate before subsequent reads.
+		 */
+		if (!revalidate_data(ctx, &data, &data_end, &ip4))
+			return DROP_INVALID;
+	}
+
 #if defined(TUNNEL_MODE)
 	/* If the connection was established over the tunnel, ignore the
 	 * destination's `skip_tunnel` flag.
@@ -1642,6 +1748,16 @@ ct_recreate4:
 		return DROP_UNKNOWN_CT;
 	}
 
+#ifdef ENABLE_EGRESS_GATEWAY_COMMON
+	if (egw_ipv4_is_mcast(ip4->daddr)) {
+		ret = egress_gw_handle_request(ctx, bpf_htons(ETH_P_IP),
+					       SECLABEL_IPV4, *dst_sec_identity,
+					       &trace);
+		if (ret != CTX_ACT_OK)
+			return ret;
+	}
+#endif
+
 	return ipv4_forward_to_destination(ctx, ip4, tuple, *dst_sec_identity,
 					   ct_state, ct_status, info, skip_tunnel,
 					   hairpin_flow, from_l7lb, proxy_port,
@@ -1705,7 +1821,25 @@ static __always_inline int __tail_handle_ipv4(struct __ctx_buff *ctx,
 	}
 
 	if (IN_MULTICAST(bpf_ntohl(ip4->daddr))) {
-		if (mcast_lookup_subscriber_map(&ip4->daddr))
+		/* Origin-node multicast EGW classification (BLO-8007).
+		 *
+		 * A pod-originated multicast destination that matches a multicast
+		 * EgressGatewayPolicy must leave via the egress gateway, so it must
+		 * NOT be short-circuited into the cluster-internal subscriber-map
+		 * fast path here - that is the host/local emission that the egress
+		 * classification has to win against. We therefore consult the EGW
+		 * policy map first and only fall through to local delivery when the
+		 * destination is *not* a multicast CEGP hit. On a hit we let the
+		 * packet continue down the normal egress path (per-packet LB -> CT
+		 * egress -> handle_ipv4_from_lxc), where the existing, already
+		 * multicast-aware EGW redirect/SNAT machinery takes over.
+		 *
+		 * Non-matching multicast (no policy, excluded CIDR, or no gateway)
+		 * keeps the pre-existing local multicast behavior, and unicast is
+		 * untouched (egw_mcast_request_is_egress() is multicast-only).
+		 */
+		if (!egw_mcast_request_is_egress(ip4->saddr, ip4->daddr) &&
+		    mcast_lookup_subscriber_map(&ip4->daddr))
 			return tail_call_internal(ctx,
 						  CILIUM_CALL_MULTICAST_EP_DELIVERY,
 						  ext_err);
