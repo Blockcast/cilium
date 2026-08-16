@@ -79,7 +79,11 @@
  *
  * 1.20 note: probes the v2 policy map first and falls back to v1. Only
  * gateway_ip (offset 4) and egress_ip (offset 0) are read, and both sit at
- * the same offset in either entry layout, so the v1 cast is safe.
+ * the same offset in either entry layout, so the v1 cast is safe. That
+ * argument holds per-field, not in general: egress_ifindex exists only in the
+ * v2 layout, so if this path is ever changed to read it (or any other v2-only
+ * field) the v1 cast stops being safe and the two layouts must be handled
+ * separately rather than through the downcast at the top of this function.
  */
 static __always_inline int
 egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
