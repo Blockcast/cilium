@@ -41,10 +41,6 @@
 #define ENCAP_IFINDEX	42
 #define IFACE_IFINDEX	44
 
-/* IPv4 datapath reads the egress ifindex from this #define rather than the
- * policy struct (the IPv4 policy entry has no egress_ifindex field).
- */
-
 #define fib_lookup mock_fib_lookup
 static __always_inline __maybe_unused long
 mock_fib_lookup(void *ctx __maybe_unused, struct bpf_fib_lookup *params __maybe_unused,
