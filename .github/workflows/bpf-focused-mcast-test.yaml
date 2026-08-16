@@ -84,7 +84,7 @@ jobs:
 
           make run_bpf_tests \
             BPF_TEST='tc_egressgw' \
-            BPF_TEST_VERBOSE=1 \
+            V=1 \
             | tee /tmp/bpf-egressgw-test.log
 
           # Fail closed on the execution set rather than on source presence.
@@ -105,24 +105,35 @@ jobs:
           fi
           echo "Verified all ${#REQUIRED_OBJECTS[@]} required tc_egressgw BPF objects were built and executed."
 
-          # Parse the tparse summary row for this package and require a tally.
-          # A missing/unparseable row is itself a failure, so a change in the
-          # runner's output shape can never silently degrade into a pass.
-          # Columns are: STATUS | ELAPSED | PACKAGE | COVER | PASS | FAIL | SKIP
-          # `read` returns non-zero on empty input; swallow that so the explicit
-          # validation below reports the problem instead of `set -e` aborting
-          # with no context.
-          read -r pass fail skip < <(
-            sed 's/\x1b\[[0-9;]*m//g' /tmp/bpf-egressgw-test.log \
-              | awk -F'│' '/github.com\/cilium\/cilium\/bpf\/tests\/bpftest/ && NF >= 9 {
-                  for (i = 6; i <= 8; i++) gsub(/^ +| +$/, "", $i);
-                  print $6, $7, $8; exit
-                }'
-          ) || true
-          if ! [[ "${pass}" =~ ^[0-9]+$ && "${fail}" =~ ^[0-9]+$ && "${skip}" =~ ^[0-9]+$ ]]; then
-            echo "Could not parse a numeric BPF test summary row (got pass='${pass}' fail='${fail}' skip='${skip}') — treating as a failure" >&2
+          # Tally the receipt from `go test -test.v` output directly.
+          #
+          # The 1.19.3 workflow parsed a tparse summary table. That does not
+          # exist on this line: Makefile.defs sets `GOTEST_FORMATTER ?= cat`,
+          # so run_bpf_tests pipes plain `go test` output. It also keys
+          # verbosity on `V=1` (`$(and $(filter 1,$(V)),-test.v)`), where the
+          # 1.19.3 Makefile mapped BPF_TEST_VERBOSE onto V -- so the old
+          # invocation produced neither per-test lines nor a table, and the
+          # table parser failed closed with an empty tally. Counting the
+          # `--- PASS/FAIL/SKIP:` lines is formatter-independent and cannot be
+          # silently degraded by a formatter change.
+          pass=$(grep -cE '^[[:space:]]*--- PASS: ' /tmp/bpf-egressgw-test.log || true)
+          fail=$(grep -cE '^[[:space:]]*--- FAIL: ' /tmp/bpf-egressgw-test.log || true)
+          skip=$(grep -cE '^[[:space:]]*--- SKIP: ' /tmp/bpf-egressgw-test.log || true)
+
+          # A run that produced no per-test lines at all means -test.v did not
+          # take effect; treat that as a failure rather than as PASS=0.
+          if [ "$((pass + fail + skip))" -eq 0 ]; then
+            echo "No '--- PASS/FAIL/SKIP:' lines in the test log — verbose output did not take effect, so the tally cannot be trusted" >&2
             exit 1
           fi
+
+          # And require the package itself to have reported ok, so a tally
+          # cannot stand in for an actually-passing package.
+          if ! grep -qE '^ok[[:space:]]+github\.com/cilium/cilium/bpf/tests/bpftest' /tmp/bpf-egressgw-test.log; then
+            echo "bpftest package did not report ok" >&2
+            exit 1
+          fi
+
           echo "BPF receipt: PASS=${pass} FAIL=${fail} SKIP=${skip}"
 
           if [ "${pass}" -ne "${EXPECTED_BPF_PASS}" ] || [ "${fail}" -ne 0 ] || [ "${skip}" -ne 0 ]; then
