@@ -89,6 +89,9 @@ const (
 	excludedCIDR1v6   = "2001:db8::22/128"
 	excludedCIDR2v6   = "2001:db8::f0/126"
 
+	mcastDestCIDR   = "232.0.0.0/4"
+	mcastDestCIDRv6 = "ff3e::/16"
+
 	egressIP1v6   = "2001:db8:101::1"
 	egressCIDR1v6 = "2001:db8:101::1/64"
 	egressIP2v6   = "2001:db8:102::1"
@@ -462,6 +465,71 @@ func TestPrivilegedEgressGatewayCEGPParser(t *testing.T) {
 	cegp, _ = newCEGP(&policy)
 	_, err = ParseCEGP(cegp)
 	require.NoError(t, err)
+}
+
+// TestPrivilegedMulticastEgressGatewayManager covers the map-writer contract
+// for multicast destination CIDRs: a multicast dstCIDR must reconcile into the
+// egress policy maps exactly like a unicast one, carrying the gateway's egress
+// interface index so the datapath multicast fast path
+// (egress_gw_fib_lookup_and_redirect -> ctx_redirect) has an ifindex to use.
+//
+// Divergence from the 1.19.3 source branch, deliberate: there, every rule other
+// than the multicast one asserted egressIfindex == 0, because that branch gated
+// the ifindex write on dstCIDR.Addr().IsMulticast(). On the 1.20 l2fix line the
+// ifindex is written for *every* v2/v6 entry -- that is upstream behaviour and
+// it is what the already-deployed image does, so the surrounding 1.20 tests
+// (e.g. the excludedCIDR1v6 row in TestPrivilegedEgressGatewayManager) already
+// assert ifIndex1 for unicast rows. Asserting 0 here would require re-adding
+// the gate and narrowing shipped unicast behaviour, so these rows assert
+// ifIndex1 throughout. See BLO-27475.
+func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
+	k := setupEgressGatewayTestSuite(t)
+	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
+
+	link, err := safenetlink.LinkByName(testInterface1)
+	require.NoError(t, err)
+	ifIndex1 := uint32(link.Attrs().Index)
+
+	policyMap4 := k.manager.policyMap4V2
+	policyMap6 := k.manager.policyMap6
+	egressGatewayManager := k.manager
+
+	k.policies.sync(t)
+	k.nodes.sync(t)
+	k.endpoints.sync(t)
+
+	node1 := newCiliumNode(node1, node1IP, nodeGroup1Labels)
+	addNodeAndReconcile(t, k, egressGatewayManager, &node1)
+
+	addPolicyAndReconcile(t, egressGatewayManager, k.policies, &policyParams{
+		name:             "policy-mcast",
+		endpointLabels:   ep1Labels,
+		destinationCIDRs: []string{mcastDestCIDR, destCIDRv6},
+		excludedCIDRs:    []string{excludedCIDR1v6},
+		policyGwParams: []policyGatewayParams{{
+			nodeLabels: nodeGroup1Labels,
+			iface:      testInterface1,
+		}},
+	})
+
+	// IPv6 multicast CEGPs are not accepted by the parser yet. Inject the
+	// prefix into the internal policy to cover the IPv6 map writer contract.
+	require.Len(t, egressGatewayManager.policyConfigs, 1)
+	for _, config := range egressGatewayManager.policyConfigs {
+		config.dstCIDRs = append(config.dstCIDRs, netip.MustParsePrefix(mcastDestCIDRv6))
+	}
+
+	ep1, _ := newEndpointAndIdentity("ep-mcast", ep1IP, ep1IPv6, ep1Labels)
+	addEndpointAndReconcile(t, egressGatewayManager, k.endpoints, &ep1)
+
+	assertEgressRules4(t, policyMap4, []egressRule{
+		{ep1IP, mcastDestCIDR, egressIP1, node1IP, ifIndex1},
+	})
+	assertEgressRules6(t, policyMap6, []egressRule{
+		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, mcastDestCIDRv6, egressIP1v6, node1IP, ifIndex1},
+		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, ifIndex1},
+	})
 }
 
 func TestPrivilegedEgressGatewayManager(t *testing.T) {

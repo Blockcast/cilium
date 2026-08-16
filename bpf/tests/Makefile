@@ -34,9 +34,17 @@ ALL_TEST_OBJECTS = $(patsubst %.c, %.o, $(wildcard *.c))
 ifeq ($(origin BPF_TEST), undefined)
 TEST_OBJECTS = $(ALL_TEST_OBJECTS)
 else
-TEST_OBJECTS=$(shell echo $(ALL_TEST_OBJECTS) | tr ' ' '\n' | grep $(BPF_TEST).o)
+# BPF_TEST is matched as a substring of the test object names. The list is
+# already restricted to *.o, so no suffix anchor is needed -- and anchoring on
+# an unescaped ".o" made the '.' a regex wildcard, so a prefix selection such
+# as BPF_TEST=tc_egressgw silently matched only the objects that happen to
+# have a character followed by an 'o' right after the prefix (e.g.
+# tc_egressgw_origin_node_multicast.o) while dropping every sibling object.
+# That also made this build-time selection disagree with the runner's
+# -test filter below, which treats BPF_TEST as a plain literal prefix.
+TEST_OBJECTS=$(shell echo $(ALL_TEST_OBJECTS) | tr ' ' '\n' | grep -- "$(BPF_TEST)")
 ifeq ($(strip $(TEST_OBJECTS)),)
-$(error Invalid test '$(BPF_TEST).o')
+$(error Invalid test '$(BPF_TEST)')
 endif
 endif
 

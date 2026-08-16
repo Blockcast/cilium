@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/types"
 
 	slimv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
@@ -21,6 +22,64 @@ func getAsPolicyLabelSelectors(k8sLss []*slimv1.LabelSelector) (lss []*policyTyp
 		lss = append(lss, policyTypes.NewLabelSelector(api.NewESFromK8sLabelSelector(labels.LabelSourceK8sKeyPrefix, ls)))
 	}
 	return lss
+}
+
+func TestParseCEGPMulticastDestinationCIDRs(t *testing.T) {
+	tests := []struct {
+		name             string
+		destinationCIDRs []string
+		excludedCIDRs    []string
+		wantErrContains  string
+	}{
+		{
+			name:             "accept IPv4 SSM multicast prefix",
+			destinationCIDRs: []string{"232.0.0.0/4"},
+		},
+		{
+			name:             "reject IPv4 multicast prefix wider than multicast range",
+			destinationCIDRs: []string{"224.0.0.0/3"},
+			wantErrContains:  "IPv4 multicast prefixes must stay within 224.0.0.0/4",
+		},
+		{
+			name:             "reject IPv6 multicast prefix",
+			destinationCIDRs: []string{"ff00::/8"},
+			wantErrContains:  "only IPv4 multicast egress gateway policies are supported",
+		},
+		{
+			name:             "reject multicast excluded CIDR",
+			destinationCIDRs: []string{"232.0.0.0/4"},
+			excludedCIDRs:    []string{"232.1.1.1/32"},
+			wantErrContains:  "multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs",
+		},
+		{
+			name:             "unicast regression",
+			destinationCIDRs: []string{"1.1.1.0/24"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cegp, _ := newCEGP(&policyParams{
+				name:             "policy-1",
+				endpointLabels:   map[string]string{"app": "test"},
+				destinationCIDRs: tt.destinationCIDRs,
+				excludedCIDRs:    tt.excludedCIDRs,
+				policyGwParams: []policyGatewayParams{{
+					iface: "eth0",
+				}},
+			})
+
+			config, err := ParseCEGP(cegp)
+			if tt.wantErrContains != "" {
+				require.Error(t, err)
+				require.ErrorContains(t, err, tt.wantErrContains)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Len(t, config.dstCIDRs, len(tt.destinationCIDRs))
+		})
+	}
 }
 
 func TestPolicyConfig_updateMatchedEndpointIDs(t *testing.T) {
