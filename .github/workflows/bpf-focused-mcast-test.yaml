@@ -69,14 +69,26 @@ jobs:
             tc_egressgw_snat
           )
 
-          # Expected passing-assertion tally for the tc_egressgw BPF matrix.
+          # Expected passing leaf-case tally for the tc_egressgw BPF matrix.
           #
-          # The 1.19.3 receipt was PASS=49. That number is a property of the
-          # *test set*, and the set is not identical here (see the rename
-          # above), so it is pinned as an explicit constant rather than
-          # inherited. Re-pin this deliberately, with the CI run that produced
-          # it, whenever a tc_egressgw test is added, removed, or reworked.
-          EXPECTED_BPF_PASS=49
+          # 48, measured on this line (run 31950287166), not inherited. The
+          # 1.19.3 receipt was 49; the single-case difference is entirely the
+          # renamed overlay test -- 1.19.3's
+          # tc_egressgw_redirect_from_overlay_with_egress_interface carried 3
+          # cases, 1.20's tc_egressgw_redirect_from_overlay_with_rt_info
+          # carries 2. The multicast contribution is unchanged at 8
+          # (6 from origin_node_multicast + 2 from redirect_multicast), so
+          # this is parity on the multicast surface. Per-object leaf counts at
+          # the time of pinning:
+          #   tc_egressgw_origin_node_multicast              6
+          #   tc_egressgw_redirect_from_host                 14
+          #   tc_egressgw_redirect_from_overlay              10
+          #   tc_egressgw_redirect_from_overlay_with_rt_info  2
+          #   tc_egressgw_redirect_multicast                  2
+          #   tc_egressgw_snat                               14
+          # Re-pin deliberately, citing the CI run, whenever a tc_egressgw
+          # test is added, removed, or reworked.
+          EXPECTED_BPF_PASS=48
 
           # Remove any pre-existing objects so the post-run assertion below
           # proves that *this* invocation compiled and selected each one.
@@ -116,7 +128,14 @@ jobs:
           # table parser failed closed with an empty tally. Counting the
           # `--- PASS/FAIL/SKIP:` lines is formatter-independent and cannot be
           # silently degraded by a formatter change.
-          pass=$(grep -cE '^[[:space:]]*--- PASS: ' /tmp/bpf-egressgw-test.log || true)
+          # PASS counts leaf cases only -- `TestBPF/<object>.o/<case>`. The
+          # bare `TestBPF` root and the six per-object group nodes also report
+          # PASS, so an unqualified count would read 55 here and would drift
+          # with the number of objects rather than the number of assertions.
+          # FAIL/SKIP stay unqualified so a failure at any level is caught
+          # (a failing leaf also fails its group and the root; the assertion
+          # is != 0, so the multiple-counting is harmless).
+          pass=$(grep -cE '^[[:space:]]*--- PASS: TestBPF/[^/]+\.o/' /tmp/bpf-egressgw-test.log || true)
           fail=$(grep -cE '^[[:space:]]*--- FAIL: ' /tmp/bpf-egressgw-test.log || true)
           skip=$(grep -cE '^[[:space:]]*--- SKIP: ' /tmp/bpf-egressgw-test.log || true)
 
