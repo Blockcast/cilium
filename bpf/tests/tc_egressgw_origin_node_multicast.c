@@ -19,8 +19,11 @@
  *   3. multicast daddr + excluded-CIDR / no-gateway       -> local   (pre-existing)
  *   4. unicast daddr   + matching policy                  -> local   (unicast CEGP
  *                                                            semantics untouched)
+ *   5. multicast daddr + matching *unicast* catch-all     -> local   (the policy
+ *                                                            is not a multicast
+ *                                                            policy - BLO-27931)
  *
- * Cases 2-4 returning "local" mean the caller keeps the pre-existing behavior,
+ * Cases 2-5 returning "local" mean the caller keeps the pre-existing behavior,
  * which is the regression guard for AC "non-matching multicast and all unicast
  * CEGP traffic follow the pre-existing paths".
  *
@@ -109,8 +112,8 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 	 * classified as egress so the from-container path skips local fanout.
 	 */
 	TEST("mcast_policy_hit_is_egress", {
-		add_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
-					  GATEWAY_NODE_IP, EGRESS_IP, IFACE_IFINDEX);
+		add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
+						GATEWAY_NODE_IP, EGRESS_IP, IFACE_IFINDEX);
 
 		assert(egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
 
@@ -126,8 +129,8 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 	TEST("mcast_local_gateway_is_also_egress", {
 		endpoint_v4_add_entry(HOST_SECONDARY_IP, 0, 0, ENDPOINT_F_HOST,
 				      0, 0, NULL, NULL);
-		add_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
-					  HOST_SECONDARY_IP, EGRESS_IP, IFACE_IFINDEX);
+		add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
+						HOST_SECONDARY_IP, EGRESS_IP, IFACE_IFINDEX);
 
 		assert(egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
 
@@ -167,8 +170,8 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 
 	/* 3a. an excluded-CIDR policy is not an egress hit. */
 	TEST("mcast_excluded_cidr_is_local", {
-		add_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
-					  EGRESS_GATEWAY_EXCLUDED_CIDR, 0, 0);
+		add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
+						EGRESS_GATEWAY_EXCLUDED_CIDR, 0, 0);
 
 		assert(!egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
 
@@ -177,12 +180,35 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 
 	/* 3b. a no-gateway policy is not an egress hit either. */
 	TEST("mcast_no_gateway_is_local", {
-		add_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
-					  EGRESS_GATEWAY_NO_GATEWAY, 0, 0);
+		add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
+						EGRESS_GATEWAY_NO_GATEWAY, 0, 0);
 
 		assert(!egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
 
 		del_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR);
+	});
+
+	/* 5. the regression this flag exists for (BLO-27931): an ordinary
+	 * unicast catch-all policy LPM-matches every multicast destination,
+	 * because `0.0.0.0/0` has a zero-length daddr prefix. It is not a
+	 * multicast policy -- its prefix base address 0.0.0.0 is not multicast,
+	 * so the control plane leaves PolicyConfig.multicast false and stamps
+	 * no flag -- and classifying it as one would silently suppress
+	 * cluster-local fanout on every cluster that runs ENABLE_MULTICAST
+	 * alongside a catch-all CEGP, with no policy change by the operator.
+	 *
+	 * This is the case the rest of this file could not catch: every other
+	 * policy here is installed at 232.0.0.0/4, which is a multicast prefix,
+	 * so the packet-derived and policy-derived answers agree and the suite
+	 * stayed green.
+	 */
+	TEST("mcast_unicast_catchall_policy_is_local", {
+		add_egressgw_policy_entry(CLIENT_IP, 0, 0,
+					  GATEWAY_NODE_IP, EGRESS_IP, IFACE_IFINDEX);
+
+		assert(!egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
+
+		del_egressgw_policy_entry(CLIENT_IP, 0, 0);
 	});
 
 	/* 4. a unicast destination, even with a matching real-gateway policy,

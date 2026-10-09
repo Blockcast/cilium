@@ -42,7 +42,9 @@ else
 # tc_egressgw_origin_node_multicast.o) while dropping every sibling object.
 # That also made this build-time selection disagree with the runner's
 # -test filter below, which treats BPF_TEST as a plain literal prefix.
-TEST_OBJECTS=$(shell echo $(ALL_TEST_OBJECTS) | tr ' ' '\n' | grep -- "$(BPF_TEST)")
+# -F is what makes that agreement exact: without it BPF_TEST is still a regex
+# here and a literal there, so any metacharacter in a test name diverges again.
+TEST_OBJECTS=$(shell echo $(ALL_TEST_OBJECTS) | tr ' ' '\n' | grep -F -- "$(BPF_TEST)")
 ifeq ($(strip $(TEST_OBJECTS)),)
 $(error Invalid test '$(BPF_TEST)')
 endif

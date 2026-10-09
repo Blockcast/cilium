@@ -60,9 +60,16 @@
  * pulled into bpf_overlay.c, which doesn't include nat.h).
  *
  * Behaviour:
- *   - No CEGP entry for (saddr, daddr): CTX_ACT_OK (caller falls through to
+ *   - No CEGP entry for (saddr, daddr), or an entry the control plane did not
+ *     classify as a multicast policy: CTX_ACT_OK (caller falls through to the
  *     standard datapath; under ENABLE_HOST_ROUTING that means fib_redirect_v4
- *     out the direct-routing dev with no SNAT — same as today).
+ *     out the direct-routing dev with no SNAT — same as today). The second case
+ *     is BLO-27931: a `0.0.0.0/0` catch-all LPM-matches every multicast
+ *     destination while being a unicast policy, and consuming its traffic here
+ *     would SNAT and redirect a packet the operator never placed under
+ *     multicast egress. egw_mcast_request_is_egress() applies the same test on
+ *     the entry path, and the two must agree — it is what routes the packet to
+ *     this function.
  *   - Policy says NO_GATEWAY: DROP_NO_EGRESS_GATEWAY.
  *   - Policy says EXCLUDED_CIDR: CTX_ACT_OK (fall through unchanged).
  *   - Policy points at a gateway that is not this node: CTX_ACT_OK (fall
@@ -75,6 +82,16 @@
  *     (HOST_ID source, CT reply, unknown L4 proto): EGW chose not to handle
  *     the packet, so neither do we.
  *
+ *     That decline case is NOT fully handled, and deliberately so: by the time
+ *     it runs, the entry-path classifier has already suppressed local fanout,
+ *     so such a packet gets neither egress nor cluster-local delivery. The
+ *     realistic trigger is multicast over an L4 protocol ct_extract_ports4()
+ *     cannot parse (HOST_ID and CT-reply are unreachable from a pod multicast
+ *     send, and IGMP is intercepted earlier in __tail_handle_ipv4()). The
+ *     classifier cannot know at classification time whether CT will parse the
+ *     packet, so closing this would mean moving the classification after CT --
+ *     a larger change than the loss justifies. Recorded rather than fixed.
+ *
  *     Locality is decided by egw_gateway_is_local() — the SAME helper
  *     egress_gw_handle_request() uses to route the packet here — so the two
  *     cannot disagree. They previously did: this test was
@@ -86,7 +103,7 @@
  *     subscriber-map fanout, the packet lost cluster-local delivery too
  *     (BLO-27928).
  *   - Policy points at this node but has resolved no egress IP: DROP_NO_EGRESS_IP.
- *   - Policy points at this node: SNAT inner src to policy->egress_ip,
+ *   - Policy points at this node: SNAT inner src to the policy's egress_ip,
  *     ctx_redirect to the policy's egress_ifindex, falling back to
  *     direct_routing_dev_ifindex when the policy does not carry one. Kernel
  *     handles the L2 mcast MAC at xmit; no FIB / neighbour lookup. No CT entry
@@ -97,12 +114,12 @@
  * the verifier treats as potentially invalidating ip4 across path-merge —
  * even though the CTX_ACT_OK fall-through never reaches snat at runtime.
  *
- * 1.20 note: probes the v2 policy map first and falls back to v1. gateway_ip
- * (offset 4) and egress_ip (offset 0) sit at the same offset in either entry
- * layout, so reading them through the v1 cast is safe. egress_ifindex is
- * v2-only and is therefore read from policy_v2 directly, never through the
- * cast — policy_v2 is NULL on the v1 path, which is exactly the "no ifindex
- * in this layout" case the fallback below handles.
+ * 1.20 note: reads the v2 policy map only. The v1 fallback is deliberately
+ * gone: the multicast flag this function now gates on exists only in the v2
+ * layout, so a v1 entry cannot answer "is this a multicast policy" and failing
+ * closed there is the safe reading. That also removes the v1 cast entirely,
+ * and with it the per-field offset argument it used to need — egress_ifindex
+ * is now read from the same entry as everything else.
  */
 static __always_inline int
 egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
@@ -110,23 +127,32 @@ egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
 {
 #if defined(ENABLE_EGRESS_GATEWAY)
 	const struct egress_gw_policy_entry_v2 *policy_v2;
-	const struct egress_gw_policy_entry *policy;
 	__u32 egress_ifindex;
 	fraginfo_t fraginfo;
 	int l4_off, ret;
 
 	policy_v2 = lookup_ip4_egress_gw_policy_v2(ip4->saddr, ip4->daddr);
-	if (policy_v2) {
-		policy = (struct egress_gw_policy_entry *)policy_v2;
-		goto evaluate_policy;
-	}
 
-	policy = lookup_ip4_egress_gw_policy(ip4->saddr, ip4->daddr);
-	if (!policy)
+	/* Only a policy the control plane classified as multicast may consume a
+	 * multicast packet here. The entry-path classifier
+	 * (egw_mcast_request_is_egress()) applies the same test for the same
+	 * reason, and the two have to agree: a `0.0.0.0/0` catch-all policy
+	 * LPM-matches every multicast destination but is a plain unicast policy,
+	 * so SNATing its traffic to the policy's egress IP and redirecting it
+	 * out the egress interface would consume a packet the operator never
+	 * placed under multicast egress (BLO-27931).
+	 *
+	 * Falling through to CTX_ACT_OK restores exactly the pre-existing
+	 * handling for those packets: the standard datapath, including
+	 * egress_gw_handle_request(), still sees them and treats them as the
+	 * unicast policy says. That is also why this precedes the gateway_ip
+	 * sentinel switch below - NO_GATEWAY on a unicast policy is the unicast
+	 * path's business, not ours.
+	 */
+	if (!egw_policy_is_multicast(policy_v2))
 		return CTX_ACT_OK;
 
-evaluate_policy:
-	switch (policy->gateway_ip) {
+	switch (policy_v2->gateway_ip) {
 	case EGRESS_GATEWAY_NO_GATEWAY:
 		return DROP_NO_EGRESS_GATEWAY;
 	case EGRESS_GATEWAY_EXCLUDED_CIDR:
@@ -138,7 +164,7 @@ evaluate_policy:
 	 * comment - but when egress_gw_handle_request() declined to act, EGW
 	 * has chosen not to handle this packet, so neither do we.
 	 */
-	if (!egw_gateway_is_local(policy->gateway_ip))
+	if (!egw_gateway_is_local(policy_v2->gateway_ip))
 		return CTX_ACT_OK;
 
 	/* A policy can match before its egress IP has been resolved. SNATing to
@@ -146,7 +172,7 @@ evaluate_policy:
 	 * discarded upstream with no drop reason; report it here instead, as
 	 * the unicast path does for the same sentinel.
 	 */
-	if (policy->egress_ip == EGRESS_GATEWAY_NO_EGRESS_IP)
+	if (policy_v2->egress_ip == EGRESS_GATEWAY_NO_EGRESS_IP)
 		return DROP_NO_EGRESS_IP;
 
 	fraginfo = ipfrag_encode_ipv4(ip4);
@@ -154,7 +180,7 @@ evaluate_policy:
 
 	ret = snat_v4_rewrite_headers(ctx, ip4->protocol, ETH_HLEN,
 				      ipfrag_has_l4_header(fraginfo), l4_off,
-				      ip4->saddr, policy->egress_ip,
+				      ip4->saddr, policy_v2->egress_ip,
 				      offsetof(struct iphdr, saddr),
 				      0, 0, 0, 0);
 	if (IS_ERR(ret))
@@ -163,9 +189,8 @@ evaluate_policy:
 	/* Honour the policy's own egress interface when it has one, so a
 	 * policy whose egressGateway.interface is not the direct-routing
 	 * device emits on the NIC that owns the egress IP it just SNATed to.
-	 * egress_ifindex is v2-only; policy_v2 is NULL on the v1 fallback.
 	 */
-	egress_ifindex = policy_v2 ? policy_v2->egress_ifindex : 0;
+	egress_ifindex = policy_v2->egress_ifindex;
 	if (!egress_ifindex)
 		egress_ifindex = CONFIG(direct_routing_dev_ifindex);
 

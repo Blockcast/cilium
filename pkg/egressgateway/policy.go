@@ -21,6 +21,7 @@ import (
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/egressmap"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
@@ -76,8 +77,11 @@ type PolicyConfig struct {
 	multicast         bool
 }
 
+// isIPv4MulticastPrefix delegates to the map layer so the control plane's
+// notion of "multicast policy" and the flag stamped into the datapath entry
+// can never drift apart (BLO-27931).
 func isIPv4MulticastPrefix(cidr netip.Prefix) bool {
-	return cidr.Addr().Is4() && cidr.Addr().IsMulticast()
+	return egressmap.IsIPv4MulticastPrefix(cidr)
 }
 
 // PolicyID includes policy name and namespace

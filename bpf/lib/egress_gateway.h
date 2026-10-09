@@ -33,13 +33,46 @@ struct egress_gw_policy_entry {
 	__be32 gateway_ip;
 };
 
+/* Flags on egress_gw_policy_entry_v2.flags.
+ *
+ * EGRESS_GW_POLICY_F_MULTICAST marks an entry the control plane classified as
+ * a *multicast* policy -- i.e. the CiliumEgressGatewayPolicy destinationCIDR
+ * this entry came from is itself inside 224.0.0.0/4
+ * (pkg/maps/egressmap.IsIPv4MulticastPrefix, the one definition both sides
+ * use). It is NOT "the packet's destination is multicast": those are different
+ * questions and conflating them is what BLO-27931 fixes. An ordinary
+ * `0.0.0.0/0` catch-all policy LPM-matches every multicast destination while
+ * being, to the control plane, a plain unicast policy -- so the datapath must
+ * read the flag the control plane set, not re-derive the answer from the
+ * packet.
+ */
+#define EGRESS_GW_POLICY_F_MULTICAST	(1U << 0)
+
 struct egress_gw_policy_entry_v2 {
 	__be32 egress_ip;
 	__be32 gateway_ip;
 	__u32 reserved[3]; /* reserved for future extension, e.g. v6 gateway_ip */
 	__u32 egress_ifindex;
-	__u32 reserved2; /* for even more future extension */
+	__u32 flags; /* EGRESS_GW_POLICY_F_* (was: reserved2) */
 };
+
+/* egw_policy_is_multicast - did the control plane classify this entry as a
+ * multicast policy?
+ *
+ * Takes the *v2* entry specifically, and is false for a NULL one, because the
+ * flag only exists in the v2 layout: struct egress_gw_policy_entry (v1) ends
+ * after gateway_ip, so an entry read through the v1 fallback carries no answer
+ * to this question. Failing closed there means a v1-only datapath keeps the
+ * pre-existing local-multicast behaviour rather than diverting fanout on an
+ * unverifiable guess. Same reasoning covers an entry written by an older agent
+ * that predates the flag: the word was `reserved2` and was always zeroed, so
+ * it reads as "not a multicast policy" until the agent rewrites the entry.
+ */
+static __always_inline bool
+egw_policy_is_multicast(const struct egress_gw_policy_entry_v2 *policy_v2)
+{
+	return policy_v2 && (policy_v2->flags & EGRESS_GW_POLICY_F_MULTICAST);
+}
 
 struct egress_gw_policy_key6 {
 	struct bpf_lpm_trie_key lpm_key;
@@ -741,10 +774,14 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
  * fanout instead of off-node, which is a working path, not a deferred one.
  *
  * Returns false for non-multicast destinations, for multicast with no matching
- * policy (or an excluded-CIDR / no-gateway policy), and when EGW is compiled
+ * policy, for a matching policy the control plane did not classify as
+ * multicast (see egw_policy_is_multicast()), and for a multicast policy whose
+ * entry is an excluded-CIDR / no-gateway sentinel, and when EGW is compiled
  * out. In every false case the caller keeps the pre-existing behavior, so this
  * helper can only ever *divert* a multicast destination that an operator has
- * explicitly placed under a policy - it never changes unicast handling.
+ * explicitly placed under a multicast policy - it never changes unicast
+ * handling, and never diverts a unicast policy that merely happens to cover
+ * 224.0.0.0/4.
  *
  * Deliberately defined OUTSIDE the ENABLE_EGRESS_GATEWAY_COMMON block above,
  * because its caller in bpf_lxc.c sits under ENABLE_MULTICAST, which is an
@@ -766,35 +803,45 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
  * multicast CEGP hits are classified before local emission. The unicast
  * gateway_ip sentinels (NO_GATEWAY / EXCLUDED_CIDR) are honored unchanged.
  *
- * 1.20 note: probes the v2 policy map first and falls back to v1, mirroring
- * egress_gw_request_needs_redirect(). Only gateway_ip is read, which sits at
- * the same offset in both entry layouts, so the v1 cast is safe. That safety
- * argument is per-field, not general: if this path is ever changed to read a
- * v2-only field such as egress_ifindex, the v1 cast must be revisited and the
- * two layouts handled separately.
+ * 1.20 note: reads the v2 policy map only. The v1 fallback that
+ * egress_gw_request_needs_redirect() keeps is deliberately absent here: the
+ * multicast flag this helper now gates on exists only in the v2 layout, so a
+ * v1 entry cannot answer the question it asks. See egw_policy_is_multicast().
  */
 static __always_inline bool
 egw_mcast_request_is_egress(__be32 saddr __maybe_unused, __be32 daddr __maybe_unused)
 {
 #if defined(ENABLE_EGRESS_GATEWAY)
 	const struct egress_gw_policy_entry_v2 *egress_gw_policy_v2;
-	const struct egress_gw_policy_entry *egress_gw_policy;
 
 	if (!egw_ipv4_is_mcast(daddr))
 		return false;
 
 	egress_gw_policy_v2 = lookup_ip4_egress_gw_policy_v2(saddr, daddr);
-	if (egress_gw_policy_v2) {
-		egress_gw_policy = (struct egress_gw_policy_entry *)egress_gw_policy_v2;
-		goto evaluate_policy;
-	}
 
-	egress_gw_policy = lookup_ip4_egress_gw_policy(saddr, daddr);
-	if (!egress_gw_policy)
+	/* The matched policy must be one the control plane classified as
+	 * multicast. Testing only egw_ipv4_is_mcast(daddr) above asks a
+	 * question about the *packet*; this asks the question about the
+	 * *policy*, which is what "an operator has explicitly placed this
+	 * destination under a multicast policy" actually means (BLO-27931).
+	 *
+	 * Without it, any policy whose destination range happens to cover
+	 * 224.0.0.0/4 suppresses cluster-local fanout -- and the canonical
+	 * `destinationCIDRs: ["0.0.0.0/0"]` policy does exactly that, while
+	 * being a plain unicast policy to the control plane (its prefix base
+	 * address 0.0.0.0 is not multicast, so PolicyConfig.multicast stays
+	 * false and none of the multicast guards in pkg/egressgateway fire).
+	 * `128.0.0.0/1` and `192.0.0.0/2` straddle the same way.
+	 *
+	 * This check also subsumes the sentinel switch below for every
+	 * non-multicast policy, but the switch is still reached for multicast
+	 * ones, which is where EXCLUDED_CIDR / NO_GATEWAY still have to mean
+	 * "keep local delivery".
+	 */
+	if (!egw_policy_is_multicast(egress_gw_policy_v2))
 		return false;
 
-evaluate_policy:
-	switch (egress_gw_policy->gateway_ip) {
+	switch (egress_gw_policy_v2->gateway_ip) {
 	case EGRESS_GATEWAY_NO_GATEWAY:
 	case EGRESS_GATEWAY_EXCLUDED_CIDR:
 		return false;

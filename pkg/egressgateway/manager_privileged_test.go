@@ -1353,13 +1353,24 @@ func tryAssertEgressRules4(policyMap egressmap.PolicyMap4V2, rules []egressRule)
 		if policyVal.EgressIfindex != r.egressIfindex {
 			return fmt.Errorf("mismatched egress ifindex")
 		}
+
+		// The multicast flag the datapath gates on (BLO-27931). Derived
+		// from the rule's own destCIDR, so this asserts both directions
+		// across every v2 test: set for a multicast destinationCIDR,
+		// clear for a unicast one -- including a `0.0.0.0/0` catch-all,
+		// which LPM-matches multicast destinations but must not be
+		// classified as a multicast policy.
+		if wantFlags := egressmap.PolicyFlags4(r.destCIDR); policyVal.Flags != wantFlags {
+			return fmt.Errorf("mismatched policy flags for %s: expected %#x, got %#x",
+				r.destCIDR, wantFlags, policyVal.Flags)
+		}
 	}
 
 	untrackedRule := false
 	policyMap.IterateWithCallback(
 		func(key *egressmap.EgressPolicyKey4, val *egressmap.EgressPolicyVal4V2) {
 			for _, r := range parsedRules {
-				if key.Match(r.sourceIP, r.destCIDR) && val.Match(r.egressIP, r.gatewayIP, r.egressIfindex) {
+				if key.Match(r.sourceIP, r.destCIDR) && val.Match(r.egressIP, r.gatewayIP, r.egressIfindex, r.destCIDR) {
 					return
 				}
 			}
