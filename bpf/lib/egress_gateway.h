@@ -116,9 +116,20 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 
 	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
 	 * handles L2 distribution. Requires the policy to set egress_ifindex.
+	 *
+	 * The same-interface contract further down (under IS_BPF_HOST, an
+	 * egress device equal to the ingress device means "let the stack
+	 * transmit", not "redirect back out the same device") applies here
+	 * too, so it is repeated rather than inherited: this early return
+	 * exists to skip the FIB lookup, so it can never reach the copy of
+	 * that guard that sits after it.
 	 */
-	if (egress_ifindex && egw_ipv4_is_mcast(daddr))
+	if (egress_ifindex && egw_ipv4_is_mcast(daddr)) {
+		if (is_defined(IS_BPF_HOST) && egress_ifindex == ctx_get_ifindex(ctx))
+			return CTX_ACT_OK;
+
 		return ctx_redirect(ctx, egress_ifindex, 0);
+	}
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
 	 * Fall back to FIB lookup on older kernels.
@@ -564,13 +575,39 @@ int egress_gw_handle_packet_v6(struct ipv6_ct_tuple *tuple,
 }
 #endif /* ENABLE_IPV6 */
 
+/* egw_gateway_is_local - is @gateway_ip an address of *this* node?
+ *
+ * The single owner of that question (BLO-27928). egress_gw_handle_request()
+ * uses it to decide whether to encapsulate a packet to its gateway node, and
+ * egress_gw_mcast_pod_egress() in bpf_lxc.c uses it to decide whether it is
+ * the node that should SNAT and emit. Those two must agree, because the first
+ * is what routes the packet to the second.
+ *
+ * They previously did not: bpf_lxc.c asked `gateway_ip == IPV4_DIRECT_ROUTING`
+ * while the routing decision here was "is a host endpoint". A host endpoint is
+ * *any* address this node owns, the direct-routing IP is one specific address,
+ * so on a multi-NIC node a policy naming a local host address other than the
+ * direct-routing IP was routed here as local and then dropped as remote. For
+ * multicast that lost cluster-local delivery too, because the entry-path
+ * classifier in __tail_handle_ipv4() had already suppressed the subscriber-map
+ * fanout on the strength of the policy matching.
+ */
+static __always_inline bool
+egw_gateway_is_local(__be32 gateway_ip)
+{
+	const struct endpoint_info *gateway_ep;
+
+	gateway_ep = __lookup_ip4_endpoint(gateway_ip);
+
+	return gateway_ep && (gateway_ep->flags & ENDPOINT_F_HOST);
+}
+
 static __always_inline
 int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
 			     __u32 src_sec_identity, __u32 dst_sec_identity,
 			     struct trace_ctx *trace)
 {
 	struct remote_endpoint_info fake_info = {0};
-	const struct endpoint_info *gateway_node_ep;
 	__be32 gateway_ip = 0;
 	void *data, *data_end;
 	struct iphdr *ip4;
@@ -676,8 +713,7 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
 	/* If the selected gateway node is the local node, then we don't
 	 * need to redirect the packet.
 	 */
-	gateway_node_ep = __lookup_ip4_endpoint(gateway_ip);
-	if (gateway_node_ep && (gateway_node_ep->flags & ENDPOINT_F_HOST))
+	if (egw_gateway_is_local(gateway_ip))
 		return CTX_ACT_OK;
 
 	/* Send the packet to egress gateway node through a tunnel. */
@@ -696,6 +732,13 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
  * Returns true when @daddr is a multicast destination that matches a multicast
  * EgressGatewayPolicy with a real gateway, i.e. the packet must leave the node
  * via the egress gateway instead of the cluster-internal multicast fast path.
+ *
+ * Deliberately NOT a locality question. Both gateway placements have a working
+ * egress path: a remote gateway is encapsulated to that node by
+ * egress_gw_handle_request() and SNATed there by bpf_overlay.c, and a local one
+ * is SNATed in place by egress_gw_mcast_pod_egress(). Narrowing this to "the
+ * gateway is this node" would send a cross-node policy's packets to local
+ * fanout instead of off-node, which is a working path, not a deferred one.
  *
  * Returns false for non-multicast destinations, for multicast with no matching
  * policy (or an excluded-CIDR / no-gateway policy), and when EGW is compiled

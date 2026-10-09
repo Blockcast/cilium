@@ -52,6 +52,21 @@ func TestParseCEGPMulticastDestinationCIDRs(t *testing.T) {
 			wantErrContains:  "multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs",
 		},
 		{
+			// The configuration the datapath cannot honour: the policy is
+			// multicast, so bpf_lxc.c bypasses conntrack and falls through
+			// on an EXCLUDED_CIDR entry. Gating on whether the *excluded*
+			// CIDR is itself multicast used to let this through.
+			name:             "reject unicast excluded CIDR on a multicast policy",
+			destinationCIDRs: []string{"232.0.0.0/4"},
+			excludedCIDRs:    []string{"10.0.0.0/8"},
+			wantErrContains:  "multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs",
+		},
+		{
+			name:             "accept unicast excluded CIDR on a unicast policy",
+			destinationCIDRs: []string{"1.1.1.0/24"},
+			excludedCIDRs:    []string{"1.1.1.128/25"},
+		},
+		{
 			name:             "unicast regression",
 			destinationCIDRs: []string{"1.1.1.0/24"},
 		},

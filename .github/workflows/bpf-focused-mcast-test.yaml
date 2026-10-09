@@ -71,9 +71,19 @@ jobs:
 
           # Expected passing tally for the tc_egressgw BPF matrix.
           #
-          # 48, measured on this line (run 31950287166), not inherited. The
-          # 1.19.3 receipt was 49; the single-case difference is entirely the
-          # renamed overlay test -- 1.19.3's
+          # 50. Re-pinned from 48 when the review findings were absorbed
+          # (BLO-27928/27929/27930): tc_egressgw_origin_node_multicast gained
+          # three TEST blocks -- one for the classifier on a local gateway,
+          # two pinning egw_gateway_is_local(), the now-single owner of the
+          # local/remote decision that egress_gw_handle_request() and
+          # egress_gw_mcast_pod_egress() must agree on -- while
+          # tc_egressgw_redirect_multicast lost its IPv6 CHECK program. That
+          # program asserted a redirect for an ff00::/8 policy that ParseCEGP
+          # rejects outright, so it pinned an unreachable path. Net +3 -1.
+          #
+          # The 48 it replaces was itself measured on this line (run
+          # 31950287166), not inherited; the 1.19.3 receipt was 49, for an
+          # unrelated reason -- 1.19.3's
           # tc_egressgw_redirect_from_overlay_with_egress_interface carried 3
           # entries, 1.20's tc_egressgw_redirect_from_overlay_with_rt_info
           # carries 2.
@@ -83,22 +93,21 @@ jobs:
           # of TEST blocks). Breakdown at the time of pinning:
           #
           #   object                                          CHECK TEST  =
-          #   tc_egressgw_origin_node_multicast                   1    5    6
+          #   tc_egressgw_origin_node_multicast                   1    8    9
           #   tc_egressgw_redirect_from_host                      -    -   14
           #   tc_egressgw_redirect_from_overlay                   -    -   10
           #   tc_egressgw_redirect_from_overlay_with_rt_info      -    -    2
-          #   tc_egressgw_redirect_multicast                      2    0    2
+          #   tc_egressgw_redirect_multicast                      1    0    1
           #   tc_egressgw_snat                                    -    -   14
           #
-          # Note the multicast contribution of 8 is 3 program nodes plus 5
-          # real assertions: tc_egressgw_redirect_multicast currently has two
-          # CHECK programs and no TEST blocks, so it contributes group nodes
-          # only. Adding TEST blocks there would strengthen the receipt and
-          # move this constant -- see BLO-27475.
+          # Note the multicast contribution of 10 is 2 program nodes plus 8
+          # real assertions: tc_egressgw_redirect_multicast still has no TEST
+          # blocks, so it contributes a group node only. Adding TEST blocks
+          # there would strengthen the receipt and move this constant.
           #
           # Re-pin deliberately, citing the CI run, whenever a tc_egressgw
           # CHECK program or TEST block is added, removed, or reworked.
-          EXPECTED_BPF_PASS=48
+          EXPECTED_BPF_PASS=50
 
           # Remove any pre-existing objects so the post-run assertion below
           # proves that *this* invocation compiled and selected each one.

@@ -482,6 +482,14 @@ func TestPrivilegedEgressGatewayCEGPParser(t *testing.T) {
 // assert ifIndex1 for unicast rows. Asserting 0 here would require re-adding
 // the gate and narrowing shipped unicast behaviour, so these rows assert
 // ifIndex1 throughout. See BLO-27475.
+//
+// This policy deliberately carries NO excludedCIDRs. ParseCEGP now rejects
+// excludedCIDRs on any policy with a multicast destination (BLO-27930): the
+// multicast datapath bypasses conntrack, so bpf_lxc.c just falls through on an
+// EXCLUDED_CIDR entry and the exclusion is silently not honoured. The
+// excluded-CIDR map-writer contract is covered on unicast policies in
+// TestPrivilegedEgressGatewayManager, and the rejection itself in
+// TestParseCEGPMulticastDestinationCIDRs.
 func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 	k := setupEgressGatewayTestSuite(t)
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})
@@ -505,7 +513,6 @@ func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 		name:             "policy-mcast",
 		endpointLabels:   ep1Labels,
 		destinationCIDRs: []string{mcastDestCIDR, destCIDRv6},
-		excludedCIDRs:    []string{excludedCIDR1v6},
 		policyGwParams: []policyGatewayParams{{
 			nodeLabels: nodeGroup1Labels,
 			iface:      testInterface1,
@@ -528,7 +535,6 @@ func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 	assertEgressRules6(t, policyMap6, []egressRule{
 		{ep1IPv6, destCIDRv6, egressIP1v6, node1IP, ifIndex1},
 		{ep1IPv6, mcastDestCIDRv6, egressIP1v6, node1IP, ifIndex1},
-		{ep1IPv6, excludedCIDR1v6, egressIP1v6, gatewayExcludedCIDRValue, ifIndex1},
 	})
 }
 

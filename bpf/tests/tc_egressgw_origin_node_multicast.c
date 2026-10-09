@@ -24,6 +24,22 @@
  * which is the regression guard for AC "non-matching multicast and all unicast
  * CEGP traffic follow the pre-existing paths".
  *
+ * Case 1 holds for a remote gateway *and* a local one: the classifier is
+ * deliberately locality-agnostic, because both placements have a working
+ * egress path (remote is encapsulated to the gateway node by
+ * egress_gw_handle_request(), local is SNATed in place by
+ * egress_gw_mcast_pod_egress()).
+ *
+ * Which of those two applies is egw_gateway_is_local()'s decision, and it is
+ * pinned here as well (BLO-27928). That helper is now the single owner of the
+ * question: egress_gw_handle_request() uses it to route the packet, and
+ * egress_gw_mcast_pod_egress() uses it to decide whether it is the node that
+ * should emit. The second used to ask `gateway_ip == IPV4_DIRECT_ROUTING`
+ * instead, so a multi-NIC node whose policy named a local host address other
+ * than the direct-routing IP routed the packet locally and then dropped it as
+ * remote - losing egress and, because this classifier had already suppressed
+ * the subscriber-map fanout, cluster-local delivery too.
+ *
  * The from-overlay (gateway-node) redirect is covered separately by
  * tc_egressgw_redirect_multicast.c.
  */
@@ -40,6 +56,12 @@
 #define ENABLE_MASQUERADE_IPV6		1
 #define ENCAP_IFINDEX	42
 #define IFACE_IFINDEX	44
+
+/* A second address this node owns, on another NIC. GATEWAY_NODE_IP stands in
+ * for a gateway on a different node: it is deliberately never given a host
+ * endpoint here.
+ */
+#define HOST_SECONDARY_IP	IPV4(10, 0, 1, 1)
 
 #define fib_lookup mock_fib_lookup
 static __always_inline __maybe_unused long
@@ -61,6 +83,7 @@ static int mock_skb_get_tunnel_key(__maybe_unused struct __sk_buff *skb,
 #include "lib/bpf_overlay.h"
 
 #include "lib/egressgw.h"
+#include "lib/endpoint.h"
 #include "lib/ipcache.h"
 
 static __always_inline __maybe_unused long
@@ -92,6 +115,47 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 		assert(egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
 
 		del_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR);
+	});
+
+	/* 1b. ...and equally when the gateway is this node. The classifier is
+	 * locality-agnostic on purpose: a local gateway is SNATed in place by
+	 * egress_gw_mcast_pod_egress(), a remote one is encapsulated to its
+	 * node, and both are "leaves via the egress gateway" as far as the
+	 * subscriber-map suppression is concerned.
+	 */
+	TEST("mcast_local_gateway_is_also_egress", {
+		endpoint_v4_add_entry(HOST_SECONDARY_IP, 0, 0, ENDPOINT_F_HOST,
+				      0, 0, NULL, NULL);
+		add_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR,
+					  HOST_SECONDARY_IP, EGRESS_IP, IFACE_IFINDEX);
+
+		assert(egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
+
+		del_egressgw_policy_entry(CLIENT_IP, MCAST_GROUP_PFX, MCAST_CIDR);
+		endpoint_v4_del_entry(HOST_SECONDARY_IP);
+	});
+
+	/* 1c. The multi-NIC case (BLO-27928). Any host endpoint of this node
+	 * counts as local, not just the direct-routing address -- this is the
+	 * predicate egress_gw_handle_request() routes on, and the one
+	 * egress_gw_mcast_pod_egress() must agree with. Asking
+	 * `gateway_ip == IPV4_DIRECT_ROUTING` here instead is what dropped
+	 * these packets on both paths.
+	 */
+	TEST("gateway_locality_host_endpoint_is_local", {
+		endpoint_v4_add_entry(HOST_SECONDARY_IP, 0, 0, ENDPOINT_F_HOST,
+				      0, 0, NULL, NULL);
+
+		assert(egw_gateway_is_local(HOST_SECONDARY_IP));
+
+		endpoint_v4_del_entry(HOST_SECONDARY_IP);
+	});
+
+	/* 1d. ...and an address with no host endpoint is remote, so the packet
+	 * is encapsulated to it rather than emitted here.
+	 */
+	TEST("gateway_locality_no_endpoint_is_remote", {
+		assert(!egw_gateway_is_local(GATEWAY_NODE_IP));
 	});
 
 	/* 2. multicast destination with no matching policy keeps local

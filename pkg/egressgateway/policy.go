@@ -498,13 +498,24 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		}
 	}
 
+	// The datapath multicast path bypasses conntrack entirely, so it has no
+	// way to honour an excludedCIDR: bpf_lxc.c returns CTX_ACT_OK for an
+	// EXCLUDED_CIDR entry and the packet simply falls through. Reject the
+	// combination on the policy, which is the invariant that actually holds
+	// -- gating on whether an individual *excluded* CIDR is multicast tests
+	// something else entirely and lets a multicast policy with a unicast
+	// excludedCIDR through.
+	if multicast && len(cegp.Spec.ExcludedCIDRs) > 0 {
+		return nil, fmt.Errorf("excludedCIDRs are unsupported on a multicast destination policy: multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs")
+	}
+
 	for _, cidrString := range cegp.Spec.ExcludedCIDRs {
 		cidr, err := netip.ParsePrefix(string(cidrString))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse excluded CIDR %s: %w", cidr, err)
 		}
 		if cidr.Addr().IsMulticast() {
-			return nil, fmt.Errorf("excluded CIDR %s is unsupported: multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs", cidrString)
+			return nil, fmt.Errorf("excluded CIDR %s is unsupported: a multicast prefix cannot be excluded from an egress gateway policy", cidrString)
 		}
 		excludedCIDRs = append(excludedCIDRs, cidr)
 	}

@@ -72,9 +72,6 @@ mock_fib_lookup(void *ctx __maybe_unused, struct bpf_fib_lookup *params __maybe_
 #define MCAST_PORT		__bpf_htons(8000)
 #define MCAST_PUB_PORT		__bpf_htons(58764)
 
-#define MCAST_GROUP_V6 \
-	{ .addr = { 0xff, 0x0e, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34 } }
-
 static __always_inline int multicast_redirect_v4_check(const struct __ctx_buff *ctx,
 						      __u32 status_code)
 {
@@ -168,59 +165,15 @@ int multicast_redirect_check(const struct __ctx_buff *ctx)
 	return ret;
 }
 
-/* IPv6: a multicast packet matching a CEGP policy installed with
- * destinationCIDRs containing FF00::/8 produces TC_ACT_REDIRECT.
+/* There is deliberately no IPv6 counterpart here. ParseCEGP rejects every
+ * IPv6 multicast destinationCIDR outright (pkg/egressgateway/policy.go,
+ * "only IPv4 multicast egress gateway policies are supported"), and the
+ * datapath bypass is gated on egw_ipv4_is_mcast(), so no IPv6 multicast
+ * policy can ever reach these programs. The previous v6 triple installed
+ * an ff00::/8 policy by writing the map directly and asserted
+ * TC_ACT_REDIRECT for it -- a behaviour the control plane forbids, pinned
+ * by a status-code-only assertion that would also have passed with the
+ * wrong SNAT source. The rejection it should have been guarding is
+ * asserted where it actually lives, in
+ * TestParseCEGPMulticastDestinationCIDRs/reject_IPv6_multicast_prefix.
  */
-PKTGEN("tc", "tc_egressgw_redirect_multicast_v6")
-int multicast_redirect_pktgen_v6(struct __ctx_buff *ctx)
-{
-	union v6addr client_v6 = CLIENT_IP_V6;
-	union v6addr mcast_v6  = MCAST_GROUP_V6;
-	struct pktgen builder;
-	struct udphdr *l4;
-	void *data;
-
-	pktgen__init(&builder, ctx);
-
-	l4 = pktgen__push_ipv6_udp_packet(&builder,
-					  (__u8 *)mac_one, (__u8 *)mac_two,
-					  (__u8 *)&client_v6, (__u8 *)&mcast_v6,
-					  MCAST_PUB_PORT, MCAST_PORT);
-	if (!l4)
-		return TEST_ERROR;
-
-	data = pktgen__push_data(&builder, default_data, sizeof(default_data));
-	if (!data)
-		return TEST_ERROR;
-
-	pktgen__finish(&builder);
-	return 0;
-}
-
-SETUP("tc", "tc_egressgw_redirect_multicast_v6")
-int multicast_redirect_setup_v6(struct __ctx_buff *ctx)
-{
-	const union v6addr client_v6   = CLIENT_IP_V6;
-	const union v6addr mcast_v6_pfx = { .addr = { 0xff } };
-	const union v6addr egress_v6    = EGRESS_IP_V6;
-
-	add_egressgw_policy_entry_v6(&client_v6, &mcast_v6_pfx, 8,
-				     GATEWAY_NODE_IP, &egress_v6, IFACE_IFINDEX);
-
-	return overlay_receive_packet(ctx);
-}
-
-CHECK("tc", "tc_egressgw_redirect_multicast_v6")
-int multicast_redirect_check_v6(const struct __ctx_buff *ctx)
-{
-	const union v6addr client_v6   = CLIENT_IP_V6;
-	const union v6addr mcast_v6_pfx = { .addr = { 0xff } };
-
-	int ret = egressgw_status_check(ctx, (struct egressgw_test_ctx) {
-			.status_code = TC_ACT_REDIRECT,
-	});
-
-	del_egressgw_policy_entry_v6(&client_v6, &mcast_v6_pfx, 8);
-
-	return ret;
-}

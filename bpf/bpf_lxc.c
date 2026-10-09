@@ -65,25 +65,44 @@
  *     out the direct-routing dev with no SNAT — same as today).
  *   - Policy says NO_GATEWAY: DROP_NO_EGRESS_GATEWAY.
  *   - Policy says EXCLUDED_CIDR: CTX_ACT_OK (fall through unchanged).
- *   - Policy points at remote node (gateway_ip != IPV4_DIRECT_ROUTING):
- *     DROP_NO_EGRESS_GATEWAY. Cross-node mcast deferred to V4.
+ *   - Policy points at a gateway that is not this node: CTX_ACT_OK (fall
+ *     through unchanged). This is normally unreachable: for multicast,
+ *     handle_ipv4_from_lxc() calls egress_gw_handle_request() first, and that
+ *     consumes the remote-gateway case by encapsulating to the gateway node
+ *     (where bpf_overlay.c does the SNAT), so only a *local* gateway ever
+ *     reaches this function. It stays a fall-through rather than a drop for
+ *     the paths where egress_gw_handle_request() declines to act at all
+ *     (HOST_ID source, CT reply, unknown L4 proto): EGW chose not to handle
+ *     the packet, so neither do we.
+ *
+ *     Locality is decided by egw_gateway_is_local() — the SAME helper
+ *     egress_gw_handle_request() uses to route the packet here — so the two
+ *     cannot disagree. They previously did: this test was
+ *     `gateway_ip != IPV4_DIRECT_ROUTING` while the routing decision was "is
+ *     a host endpoint". On a multi-NIC node a policy naming a local host
+ *     address other than the direct-routing IP was therefore routed here as
+ *     local and then dropped as remote — and because the entry-path
+ *     classifier in __tail_handle_ipv4() had already suppressed the
+ *     subscriber-map fanout, the packet lost cluster-local delivery too
+ *     (BLO-27928).
+ *   - Policy points at this node but has resolved no egress IP: DROP_NO_EGRESS_IP.
  *   - Policy points at this node: SNAT inner src to policy->egress_ip,
- *     ctx_redirect to direct_routing_dev_ifindex. Kernel handles the L2
- *     mcast MAC at xmit; no FIB / neighbour lookup. No CT entry (multicast
- *     has no reply path).
+ *     ctx_redirect to the policy's egress_ifindex, falling back to
+ *     direct_routing_dev_ifindex when the policy does not carry one. Kernel
+ *     handles the L2 mcast MAC at xmit; no FIB / neighbour lookup. No CT entry
+ *     (multicast has no reply path).
  *
  * Caller MUST revalidate the data pointer after this returns CTX_ACT_OK,
  * because snat_v4_rewrite_headers internally calls ctx_store_bytes which
  * the verifier treats as potentially invalidating ip4 across path-merge —
  * even though the CTX_ACT_OK fall-through never reaches snat at runtime.
  *
- * 1.20 note: probes the v2 policy map first and falls back to v1. Only
- * gateway_ip (offset 4) and egress_ip (offset 0) are read, and both sit at
- * the same offset in either entry layout, so the v1 cast is safe. That
- * argument holds per-field, not in general: egress_ifindex exists only in the
- * v2 layout, so if this path is ever changed to read it (or any other v2-only
- * field) the v1 cast stops being safe and the two layouts must be handled
- * separately rather than through the downcast at the top of this function.
+ * 1.20 note: probes the v2 policy map first and falls back to v1. gateway_ip
+ * (offset 4) and egress_ip (offset 0) sit at the same offset in either entry
+ * layout, so reading them through the v1 cast is safe. egress_ifindex is
+ * v2-only and is therefore read from policy_v2 directly, never through the
+ * cast — policy_v2 is NULL on the v1 path, which is exactly the "no ifindex
+ * in this layout" case the fallback below handles.
  */
 static __always_inline int
 egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
@@ -92,6 +111,7 @@ egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
 #if defined(ENABLE_EGRESS_GATEWAY)
 	const struct egress_gw_policy_entry_v2 *policy_v2;
 	const struct egress_gw_policy_entry *policy;
+	__u32 egress_ifindex;
 	fraginfo_t fraginfo;
 	int l4_off, ret;
 
@@ -113,8 +133,21 @@ evaluate_policy:
 		return CTX_ACT_OK;
 	}
 
-	if (policy->gateway_ip != IPV4_DIRECT_ROUTING)
-		return DROP_NO_EGRESS_GATEWAY;
+	/* Not our gateway: hand the packet back to the standard datapath
+	 * rather than consuming it. Normally unreachable - see the header
+	 * comment - but when egress_gw_handle_request() declined to act, EGW
+	 * has chosen not to handle this packet, so neither do we.
+	 */
+	if (!egw_gateway_is_local(policy->gateway_ip))
+		return CTX_ACT_OK;
+
+	/* A policy can match before its egress IP has been resolved. SNATing to
+	 * the sentinel would rewrite the source to 0.0.0.0 and get the packet
+	 * discarded upstream with no drop reason; report it here instead, as
+	 * the unicast path does for the same sentinel.
+	 */
+	if (policy->egress_ip == EGRESS_GATEWAY_NO_EGRESS_IP)
+		return DROP_NO_EGRESS_IP;
 
 	fraginfo = ipfrag_encode_ipv4(ip4);
 	l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
@@ -127,7 +160,16 @@ evaluate_policy:
 	if (IS_ERR(ret))
 		return ret;
 
-	return ctx_redirect(ctx, CONFIG(direct_routing_dev_ifindex), 0);
+	/* Honour the policy's own egress interface when it has one, so a
+	 * policy whose egressGateway.interface is not the direct-routing
+	 * device emits on the NIC that owns the egress IP it just SNATed to.
+	 * egress_ifindex is v2-only; policy_v2 is NULL on the v1 fallback.
+	 */
+	egress_ifindex = policy_v2 ? policy_v2->egress_ifindex : 0;
+	if (!egress_ifindex)
+		egress_ifindex = CONFIG(direct_routing_dev_ifindex);
+
+	return ctx_redirect(ctx, egress_ifindex, 0);
 #else
 	return CTX_ACT_OK;
 #endif /* ENABLE_EGRESS_GATEWAY */
