@@ -21,6 +21,7 @@ import (
 	slim_metav1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/apis/meta/v1"
 	"github.com/cilium/cilium/pkg/labels"
 	"github.com/cilium/cilium/pkg/logging/logfields"
+	"github.com/cilium/cilium/pkg/maps/egressmap"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/policy"
 	"github.com/cilium/cilium/pkg/policy/api"
@@ -73,6 +74,14 @@ type PolicyConfig struct {
 	matchedEndpoints  map[endpointID]*endpointMetadata
 	v4Needed          bool
 	v6Needed          bool
+	multicast         bool
+}
+
+// isIPv4MulticastPrefix delegates to the map layer so the control plane's
+// notion of "multicast policy" and the flag stamped into the datapath entry
+// can never drift apart (BLO-27931).
+func isIPv4MulticastPrefix(cidr netip.Prefix) bool {
+	return egressmap.IsIPv4MulticastPrefix(cidr)
 }
 
 // PolicyID includes policy name and namespace
@@ -436,6 +445,7 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 	var excludedCIDRs []netip.Prefix
 	var policyGwConfigs []policyGatewayConfig
 	var v4Needed, v6Needed bool
+	var multicast bool
 
 	allowAllNamespacesRequirement := slim_metav1.LabelSelectorRequirement{
 		Key:      k8sConst.PodNamespaceLabel,
@@ -475,6 +485,15 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse destination CIDR %s: %w", cidrString, err)
 		}
+		if cidr.Addr().Is6() && cidr.Addr().IsMulticast() {
+			return nil, fmt.Errorf("multicast destination CIDR %s is unsupported: only IPv4 multicast egress gateway policies are supported", cidrString)
+		}
+		if isIPv4MulticastPrefix(cidr) {
+			if cidr.Bits() < 4 {
+				return nil, fmt.Errorf("multicast destination CIDR %s is unsupported: IPv4 multicast prefixes must stay within 224.0.0.0/4", cidrString)
+			}
+			multicast = true
+		}
 		dstCidrList = append(dstCidrList, cidr)
 		if cidr.Addr().Is6() {
 			v6Needed = true
@@ -483,10 +502,24 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		}
 	}
 
+	// The datapath multicast path bypasses conntrack entirely, so it has no
+	// way to honour an excludedCIDR: bpf_lxc.c returns CTX_ACT_OK for an
+	// EXCLUDED_CIDR entry and the packet simply falls through. Reject the
+	// combination on the policy, which is the invariant that actually holds
+	// -- gating on whether an individual *excluded* CIDR is multicast tests
+	// something else entirely and lets a multicast policy with a unicast
+	// excludedCIDR through.
+	if multicast && len(cegp.Spec.ExcludedCIDRs) > 0 {
+		return nil, fmt.Errorf("excludedCIDRs are unsupported on a multicast destination policy: multicast egress gateway policies bypass conntrack and cannot use excludedCIDRs")
+	}
+
 	for _, cidrString := range cegp.Spec.ExcludedCIDRs {
 		cidr, err := netip.ParsePrefix(string(cidrString))
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse excluded CIDR %s: %w", cidr, err)
+		}
+		if cidr.Addr().IsMulticast() {
+			return nil, fmt.Errorf("excluded CIDR %s is unsupported: a multicast prefix cannot be excluded from an egress gateway policy", cidrString)
 		}
 		excludedCIDRs = append(excludedCIDRs, cidr)
 	}
@@ -542,6 +575,7 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		policyGwConfigs:   policyGwConfigs,
 		v4Needed:          v4Needed,
 		v6Needed:          v6Needed,
+		multicast:         multicast,
 		id: types.NamespacedName{
 			Name: name,
 		},
