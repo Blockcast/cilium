@@ -22,6 +22,9 @@
  *   5. multicast daddr + matching *unicast* catch-all     -> local   (the policy
  *                                                            is not a multicast
  *                                                            policy - BLO-27931)
+ *   5b. ...including while that catch-all's gateway is still unresolved, the
+ *       agent-start transient that the from-lxc consuming site used to turn
+ *       into DROP_NO_EGRESS_GATEWAY for every pod multicast send on the node.
  *
  * Cases 2-5 returning "local" mean the caller keeps the pre-existing behavior,
  * which is the regression guard for AC "non-matching multicast and all unicast
@@ -205,6 +208,25 @@ int egressgw_origin_node_mcast_classify(const struct __ctx_buff *ctx __maybe_unu
 	TEST("mcast_unicast_catchall_policy_is_local", {
 		add_egressgw_policy_entry(CLIENT_IP, 0, 0,
 					  GATEWAY_NODE_IP, EGRESS_IP, IFACE_IFINDEX);
+
+		assert(!egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
+
+		del_egressgw_policy_entry(CLIENT_IP, 0, 0);
+	});
+
+	/* 5b. the same catch-all before its gateway has resolved. This is the
+	 * shape that made the first consuming site (bpf_lxc.c's
+	 * handle_ipv4_from_lxc() egress_gw_handle_request() call) worse than a
+	 * mis-routed packet: with that site gated on egw_ipv4_is_mcast() alone,
+	 * a catch-all sitting at the NO_GATEWAY sentinel -- a normal transient
+	 * at agent start -- returned DROP_NO_EGRESS_GATEWAY for every pod
+	 * multicast send on the node, after the entry-path classifier had
+	 * already declined to suppress fanout. Both sites now ask this helper,
+	 * so the answer is one value and the packet keeps local delivery.
+	 */
+	TEST("mcast_unicast_catchall_no_gateway_is_local", {
+		add_egressgw_policy_entry(CLIENT_IP, 0, 0,
+					  EGRESS_GATEWAY_NO_GATEWAY, 0, 0);
 
 		assert(!egw_mcast_request_is_egress(CLIENT_IP, MCAST_GROUP));
 

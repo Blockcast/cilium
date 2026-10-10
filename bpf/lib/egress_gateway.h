@@ -529,9 +529,24 @@ int egress_gw_fib_lookup_and_redirect_v6(struct __ctx_buff *ctx,
 	struct bpf_fib_lookup_padded *fib_params = AUX(fib_params_storage);
 	int ret, flags = 0;
 
-	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4. */
-	if (egress_ifindex && egw_ipv6_is_mcast(daddr))
+	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4, including
+	 * the same-interface contract further down: this early return exists to
+	 * skip the FIB lookup, so it can never reach the copy of that guard
+	 * sitting after it, and it has to be repeated rather than inherited.
+	 *
+	 * Defensive on both current call sites — nodeport_egress.h pre-guards
+	 * `target.ifindex == CONFIG(interface_ifindex)` before calling, and
+	 * bpf_overlay.c does not define IS_BPF_HOST — but mirrored so the v4 and
+	 * v6 helpers do not drift. Unlike v4 this stays packet-derived:
+	 * egress_gw_policy_entry6 has no flag word, so there is no v6 equivalent
+	 * of egw_policy_is_multicast() to ask yet.
+	 */
+	if (egress_ifindex && egw_ipv6_is_mcast(daddr)) {
+		if (is_defined(IS_BPF_HOST) && egress_ifindex == ctx_get_ifindex(ctx))
+			return CTX_ACT_OK;
+
 		return ctx_redirect(ctx, egress_ifindex, 0);
+	}
 
 	if (egress_ifindex && neigh_resolver_without_nh_available()) {
 		/* Can't use redirect_neigh() when

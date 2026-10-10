@@ -68,12 +68,15 @@
  *     destination while being a unicast policy, and consuming its traffic here
  *     would SNAT and redirect a packet the operator never placed under
  *     multicast egress. egw_mcast_request_is_egress() applies the same test on
- *     the entry path, and the two must agree — it is what routes the packet to
- *     this function.
+ *     the entry path AND at the handle_ipv4_from_lxc() site below, so all three
+ *     consuming sites read one flag. They have to: the other two both run
+ *     BEFORE this function, so if either asked the packet-derived question
+ *     instead, this check would simply never be reached for the traffic it
+ *     exists to protect (BLO-27931 round 2).
  *   - Policy says NO_GATEWAY: DROP_NO_EGRESS_GATEWAY.
  *   - Policy says EXCLUDED_CIDR: CTX_ACT_OK (fall through unchanged).
  *   - Policy points at a gateway that is not this node: CTX_ACT_OK (fall
- *     through unchanged). This is normally unreachable: for multicast,
+ *     through unchanged). This is normally unreachable: for a multicast policy,
  *     handle_ipv4_from_lxc() calls egress_gw_handle_request() first, and that
  *     consumes the remote-gateway case by encapsulating to the gateway node
  *     (where bpf_overlay.c does the SNAT), so only a *local* gateway ever
@@ -1816,7 +1819,31 @@ ct_recreate4:
 	}
 
 #ifdef ENABLE_EGRESS_GATEWAY_COMMON
-	if (egw_ipv4_is_mcast(ip4->daddr)) {
+	/* Multicast EGW diversion, downstream-only (BLO-3293). This is the
+	 * FIRST of the two consuming sites -- it runs before
+	 * ipv4_forward_to_destination() and therefore before
+	 * egress_gw_mcast_pod_egress() -- so it has to ask the same question,
+	 * or the gate down there is unreachable for every case this one
+	 * consumes (BLO-27931).
+	 *
+	 * It is the classifier, not egw_ipv4_is_mcast(), for exactly the reason
+	 * egress_gw_mcast_pod_egress() reads the flag: egw_ipv4_is_mcast() asks
+	 * about the *packet*, and a `destinationCIDRs: ["0.0.0.0/0"]` catch-all
+	 * LPM-matches every multicast destination while being a plain unicast
+	 * policy. Gating on the packet alone sent such a packet to the gateway
+	 * (or dropped it DROP_NO_EGRESS_GATEWAY before the gateway resolved)
+	 * after the entry-path classifier had already declined to suppress
+	 * fanout -- so the local subscriber never got it and the operator never
+	 * asked for any of it.
+	 *
+	 * Strictly narrowing: this whole block is downstream-added, so every
+	 * case it now declines falls through to the pre-existing upstream
+	 * datapath. It also makes EGW-on/multicast-off safe, which the packet
+	 * test could not: this block is under ENABLE_EGRESS_GATEWAY_COMMON
+	 * while the entry-path classifier is under ENABLE_MULTICAST, so on that
+	 * build nothing upstream of here classified the packet at all.
+	 */
+	if (egw_mcast_request_is_egress(ip4->saddr, ip4->daddr)) {
 		ret = egress_gw_handle_request(ctx, bpf_htons(ETH_P_IP),
 					       SECLABEL_IPV4, *dst_sec_identity,
 					       &trace);
