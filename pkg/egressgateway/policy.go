@@ -74,7 +74,6 @@ type PolicyConfig struct {
 	matchedEndpoints  map[endpointID]*endpointMetadata
 	v4Needed          bool
 	v6Needed          bool
-	multicast         bool
 }
 
 // isIPv4MulticastPrefix delegates to the map layer so the control plane's
@@ -575,7 +574,6 @@ func ParseCEGP(cegp *v2.CiliumEgressGatewayPolicy) (*PolicyConfig, error) {
 		policyGwConfigs:   policyGwConfigs,
 		v4Needed:          v4Needed,
 		v6Needed:          v6Needed,
-		multicast:         multicast,
 		id: types.NamespacedName{
 			Name: name,
 		},

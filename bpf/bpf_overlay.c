@@ -277,7 +277,32 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 
 #ifdef ENABLE_MULTICAST
 	if (IN_MULTICAST(bpf_ntohl(ip4->daddr))) {
-		if (mcast_lookup_subscriber_map(&ip4->daddr))
+		/* Gateway-node mirror of the origin-node ordering at
+		 * bpf_lxc.c:1935 - the EGW classification has to win against
+		 * local emission here too.
+		 *
+		 * This is the node a multicast CEGP hit was encapsulated to by
+		 * egress_gw_handle_request(), and the EGW block below is what
+		 * SNATs it and emits it out the egress interface. Taking the
+		 * subscriber fast path first consumed the packet whenever this
+		 * node happened to hold a local subscriber for the group --
+		 * tail_call_internal() never returns -- so the policy silently
+		 * stopped emitting, with no drop notification. That is exactly
+		 * the premise egw_mcast_request_is_egress() documents ("a
+		 * remote gateway is encapsulated to that node ... and SNATed
+		 * there by bpf_overlay.c"), so both ends have to read it the
+		 * same way.
+		 *
+		 * Strictly narrowing, and only for a destination an operator
+		 * put under a multicast policy: every case the classifier
+		 * declines -- multicast with no policy, a policy the control
+		 * plane did not flag as multicast, or a no-gateway /
+		 * excluded-CIDR sentinel -- still takes the pre-existing local
+		 * delivery path. Pinned both ways in
+		 * bpf/tests/tc_egressgw_gateway_node_multicast.c.
+		 */
+		if (!egw_mcast_request_is_egress(ip4->saddr, ip4->daddr) &&
+		    mcast_lookup_subscriber_map(&ip4->daddr))
 			return tail_call_internal(ctx,
 						  CILIUM_CALL_MULTICAST_EP_DELIVERY,
 						  ext_err);

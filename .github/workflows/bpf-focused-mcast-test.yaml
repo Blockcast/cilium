@@ -62,6 +62,7 @@ jobs:
           # the 1.19.3 one.
           REQUIRED_OBJECTS=(
             tc_egressgw_origin_node_multicast
+            tc_egressgw_gateway_node_multicast
             tc_egressgw_redirect_multicast
             tc_egressgw_redirect_from_host
             tc_egressgw_redirect_from_overlay
@@ -114,6 +115,7 @@ jobs:
           #
           #   object                                          CHECK TEST  =
           #   tc_egressgw_origin_node_multicast                   1   10   11
+          #   tc_egressgw_gateway_node_multicast                  2    0    2
           #   tc_egressgw_redirect_from_host                      -    -   14
           #   tc_egressgw_redirect_from_overlay                   -    -   10
           #   tc_egressgw_redirect_from_overlay_with_rt_info      -    -    2
@@ -125,9 +127,20 @@ jobs:
           # blocks, so it contributes a group node only. Adding TEST blocks
           # there would strengthen the receipt and move this constant.
           #
+          # 52 -> 54 (BLO-27475): tc_egressgw_gateway_node_multicast is new,
+          # and contributes its 2 CHECK program nodes. It is the from-overlay
+          # counterpart to tc_egressgw_origin_node_multicast -- the gateway
+          # node is where a multicast CEGP hit is SNATed and emitted, and
+          # tc_egressgw_redirect_multicast covers that same program with
+          # ENABLE_MULTICAST *off*, so the subscriber short-circuit it has to
+          # win against is not even in that binary. Its two CHECKs are a
+          # matched pair and both discriminate: dropping the classifier from
+          # bpf_overlay.c fails the first, and weakening it back to the packet
+          # test egw_ipv4_is_mcast(daddr) fails the second.
+          #
           # Re-pin deliberately, citing the CI run, whenever a tc_egressgw
           # CHECK program or TEST block is added, removed, or reworked.
-          EXPECTED_BPF_PASS=52
+          EXPECTED_BPF_PASS=54
 
           # Remove any pre-existing objects so the post-run assertion below
           # proves that *this* invocation compiled and selected each one.
