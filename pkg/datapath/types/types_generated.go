@@ -171,7 +171,7 @@ type EgressGWPolicyEntryV2 struct {
 	GatewayIP     uint32
 	Reserved      [3]uint32
 	EgressIfIndex uint32
-	Reserved2     uint32
+	Flags         uint32
 }
 
 // EgressGWPolicyKey is generated from the BPF C type egress_gw_policy_key.

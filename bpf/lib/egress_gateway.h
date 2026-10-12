@@ -14,6 +14,14 @@
 #define EGRESS_GATEWAY_RT_TBID	0
 #endif
 
+/* Multicast destination predicates. Operate on network-byte-order addresses
+ * so the high-byte mask is constant-folded and no runtime bswap is needed
+ * on the unicast hot path.
+ */
+#define egw_ipv4_is_mcast(daddr)					\
+	(((daddr) & bpf_htonl(0xF0000000U)) == bpf_htonl(0xE0000000U))
+#define egw_ipv6_is_mcast(daddr) ((daddr)->addr[0] == 0xffU)
+
 struct egress_gw_policy_key {
 	struct bpf_lpm_trie_key lpm_key;
 	__be32 saddr;
@@ -25,13 +33,46 @@ struct egress_gw_policy_entry {
 	__be32 gateway_ip;
 };
 
+/* Flags on egress_gw_policy_entry_v2.flags.
+ *
+ * EGRESS_GW_POLICY_F_MULTICAST marks an entry the control plane classified as
+ * a *multicast* policy -- i.e. the CiliumEgressGatewayPolicy destinationCIDR
+ * this entry came from is itself inside 224.0.0.0/4
+ * (pkg/maps/egressmap.IsIPv4MulticastPrefix, the one definition both sides
+ * use). It is NOT "the packet's destination is multicast": those are different
+ * questions and conflating them is what BLO-27931 fixes. An ordinary
+ * `0.0.0.0/0` catch-all policy LPM-matches every multicast destination while
+ * being, to the control plane, a plain unicast policy -- so the datapath must
+ * read the flag the control plane set, not re-derive the answer from the
+ * packet.
+ */
+#define EGRESS_GW_POLICY_F_MULTICAST	(1U << 0)
+
 struct egress_gw_policy_entry_v2 {
 	__be32 egress_ip;
 	__be32 gateway_ip;
 	__u32 reserved[3]; /* reserved for future extension, e.g. v6 gateway_ip */
 	__u32 egress_ifindex;
-	__u32 reserved2; /* for even more future extension */
+	__u32 flags; /* EGRESS_GW_POLICY_F_* (was: reserved2) */
 };
+
+/* egw_policy_is_multicast - did the control plane classify this entry as a
+ * multicast policy?
+ *
+ * Takes the *v2* entry specifically, and is false for a NULL one, because the
+ * flag only exists in the v2 layout: struct egress_gw_policy_entry (v1) ends
+ * after gateway_ip, so an entry read through the v1 fallback carries no answer
+ * to this question. Failing closed there means a v1-only datapath keeps the
+ * pre-existing local-multicast behaviour rather than diverting fanout on an
+ * unverifiable guess. Same reasoning covers an entry written by an older agent
+ * that predates the flag: the word was `reserved2` and was always zeroed, so
+ * it reads as "not a multicast policy" until the agent rewrites the entry.
+ */
+static __always_inline bool
+egw_policy_is_multicast(const struct egress_gw_policy_entry_v2 *policy_v2)
+{
+	return policy_v2 && (policy_v2->flags & EGRESS_GW_POLICY_F_MULTICAST);
+}
 
 struct egress_gw_policy_key6 {
 	struct bpf_lpm_trie_key lpm_key;
@@ -105,6 +146,23 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 	struct bpf_fib_lookup_padded fib_params = {};
 	int flags = 0;
 	int ret;
+
+	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
+	 * handles L2 distribution. Requires the policy to set egress_ifindex.
+	 *
+	 * The same-interface contract further down (under IS_BPF_HOST, an
+	 * egress device equal to the ingress device means "let the stack
+	 * transmit", not "redirect back out the same device") applies here
+	 * too, so it is repeated rather than inherited: this early return
+	 * exists to skip the FIB lookup, so it can never reach the copy of
+	 * that guard that sits after it.
+	 */
+	if (egress_ifindex && egw_ipv4_is_mcast(daddr)) {
+		if (is_defined(IS_BPF_HOST) && egress_ifindex == ctx_get_ifindex(ctx))
+			return CTX_ACT_OK;
+
+		return ctx_redirect(ctx, egress_ifindex, 0);
+	}
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
 	 * Fall back to FIB lookup on older kernels.
@@ -326,6 +384,13 @@ static __always_inline
 int egress_gw_handle_packet(struct ipv4_ct_tuple *tuple,
 			    __u32 dst_sec_identity, __be32 *gateway_ip)
 {
+	/* Multicast destinations are external by definition; force WORLD_ID so
+	 * a stale ipcache "cluster" identity can't short-circuit the EGW path.
+	 * tuple is reversed by the caller — original daddr lives in saddr.
+	 */
+	if (egw_ipv4_is_mcast(tuple->saddr))
+		dst_sec_identity = WORLD_ID;
+
 	/* If the packet is destined to an entity inside the cluster,
 	 * either EP or node, it should not be forwarded to an egress
 	 * gateway since only traffic leaving the cluster is supposed to
@@ -464,6 +529,25 @@ int egress_gw_fib_lookup_and_redirect_v6(struct __ctx_buff *ctx,
 	struct bpf_fib_lookup_padded *fib_params = AUX(fib_params_storage);
 	int ret, flags = 0;
 
+	/* IPv6 multicast: skip FIB/neighbor — same rationale as IPv4, including
+	 * the same-interface contract further down: this early return exists to
+	 * skip the FIB lookup, so it can never reach the copy of that guard
+	 * sitting after it, and it has to be repeated rather than inherited.
+	 *
+	 * Defensive on both current call sites — nodeport_egress.h pre-guards
+	 * `target.ifindex == CONFIG(interface_ifindex)` before calling, and
+	 * bpf_overlay.c does not define IS_BPF_HOST — but mirrored so the v4 and
+	 * v6 helpers do not drift. Unlike v4 this stays packet-derived:
+	 * egress_gw_policy_entry6 has no flag word, so there is no v6 equivalent
+	 * of egw_policy_is_multicast() to ask yet.
+	 */
+	if (egress_ifindex && egw_ipv6_is_mcast(daddr)) {
+		if (is_defined(IS_BPF_HOST) && egress_ifindex == ctx_get_ifindex(ctx))
+			return CTX_ACT_OK;
+
+		return ctx_redirect(ctx, egress_ifindex, 0);
+	}
+
 	if (egress_ifindex && neigh_resolver_without_nh_available()) {
 		/* Can't use redirect_neigh() when
 		 * - custom routing table is needed, or
@@ -523,6 +607,10 @@ static __always_inline
 int egress_gw_handle_packet_v6(struct ipv6_ct_tuple *tuple,
 			       __u32 dst_sec_identity, __be32 *gateway_ip)
 {
+	/* See IPv4 counterpart: force WORLD_ID for multicast destinations. */
+	if (egw_ipv6_is_mcast(&tuple->saddr))
+		dst_sec_identity = WORLD_ID;
+
 	/* If the packet is destined to an entity inside the cluster,
 	 * either EP or node, it should not be forwarded to an egress
 	 * gateway since only traffic leaving the cluster is supposed to
@@ -535,13 +623,39 @@ int egress_gw_handle_packet_v6(struct ipv6_ct_tuple *tuple,
 }
 #endif /* ENABLE_IPV6 */
 
+/* egw_gateway_is_local - is @gateway_ip an address of *this* node?
+ *
+ * The single owner of that question (BLO-27928). egress_gw_handle_request()
+ * uses it to decide whether to encapsulate a packet to its gateway node, and
+ * egress_gw_mcast_pod_egress() in bpf_lxc.c uses it to decide whether it is
+ * the node that should SNAT and emit. Those two must agree, because the first
+ * is what routes the packet to the second.
+ *
+ * They previously did not: bpf_lxc.c asked `gateway_ip == IPV4_DIRECT_ROUTING`
+ * while the routing decision here was "is a host endpoint". A host endpoint is
+ * *any* address this node owns, the direct-routing IP is one specific address,
+ * so on a multi-NIC node a policy naming a local host address other than the
+ * direct-routing IP was routed here as local and then dropped as remote. For
+ * multicast that lost cluster-local delivery too, because the entry-path
+ * classifier in __tail_handle_ipv4() had already suppressed the subscriber-map
+ * fanout on the strength of the policy matching.
+ */
+static __always_inline bool
+egw_gateway_is_local(__be32 gateway_ip)
+{
+	const struct endpoint_info *gateway_ep;
+
+	gateway_ep = __lookup_ip4_endpoint(gateway_ip);
+
+	return gateway_ep && (gateway_ep->flags & ENDPOINT_F_HOST);
+}
+
 static __always_inline
 int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
 			     __u32 src_sec_identity, __u32 dst_sec_identity,
 			     struct trace_ctx *trace)
 {
 	struct remote_endpoint_info fake_info = {0};
-	const struct endpoint_info *gateway_node_ep;
 	__be32 gateway_ip = 0;
 	void *data, *data_end;
 	struct iphdr *ip4;
@@ -647,8 +761,7 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
 	/* If the selected gateway node is the local node, then we don't
 	 * need to redirect the packet.
 	 */
-	gateway_node_ep = __lookup_ip4_endpoint(gateway_ip);
-	if (gateway_node_ep && (gateway_node_ep->flags & ENDPOINT_F_HOST))
+	if (egw_gateway_is_local(gateway_ip))
 		return CTX_ACT_OK;
 
 	/* Send the packet to egress gateway node through a tunnel. */
@@ -660,3 +773,97 @@ int egress_gw_handle_request(struct __ctx_buff *ctx, __be16 proto,
 }
 
 #endif /* ENABLE_EGRESS_GATEWAY_COMMON */
+
+/* egw_mcast_request_is_egress - origin-node classification for pod-originated
+ * IPv4 multicast (BLO-8007, downstream-only).
+ *
+ * Returns true when @daddr is a multicast destination that matches a multicast
+ * EgressGatewayPolicy with a real gateway, i.e. the packet must leave the node
+ * via the egress gateway instead of the cluster-internal multicast fast path.
+ *
+ * Deliberately NOT a locality question. Both gateway placements have a working
+ * egress path: a remote gateway is encapsulated to that node by
+ * egress_gw_handle_request() and SNATed there by bpf_overlay.c, and a local one
+ * is SNATed in place by egress_gw_mcast_pod_egress(). Narrowing this to "the
+ * gateway is this node" would send a cross-node policy's packets to local
+ * fanout instead of off-node, which is a working path, not a deferred one.
+ *
+ * Returns false for non-multicast destinations, for multicast with no matching
+ * policy, for a matching policy the control plane did not classify as
+ * multicast (see egw_policy_is_multicast()), and for a multicast policy whose
+ * entry is an excluded-CIDR / no-gateway sentinel, and when EGW is compiled
+ * out. In every false case the caller keeps the pre-existing behavior, so this
+ * helper can only ever *divert* a multicast destination that an operator has
+ * explicitly placed under a multicast policy - it never changes unicast
+ * handling, and never diverts a unicast policy that merely happens to cover
+ * 224.0.0.0/4.
+ *
+ * Deliberately defined OUTSIDE the ENABLE_EGRESS_GATEWAY_COMMON block above,
+ * because its caller in bpf_lxc.c sits under ENABLE_MULTICAST, which is an
+ * independent feature flag: the agent emits ENABLE_MULTICAST from
+ * MulticastEnabled (pkg/maps/multicast/subscribermap.go), while
+ * ENABLE_EGRESS_GATEWAY_COMMON is derived from ENABLE_EGRESS_GATEWAY in
+ * bpf/lib/common.h. Multicast-on/EGW-off is therefore a real build config, and
+ * with this helper inside the block it would not exist there at all. Keeping it
+ * out here means the #else stub below is always available, so that config keeps
+ * compiling and keeps its pre-existing local-delivery behavior. Note the
+ * implication only runs one way (EGW => EGW_COMMON), so when EGW_COMMON is
+ * undefined ENABLE_EGRESS_GATEWAY is undefined too and the stub references
+ * none of the policy-map helpers above.
+ *
+ * Downstream divergence from upstream Cilium: upstream never consults the EGW
+ * policy map for multicast destinations because the from-container path short-
+ * circuits IN_MULTICAST traffic to local delivery before any EGW lookup can
+ * run. We deliberately add this multicast-only lookup on the origin node so
+ * multicast CEGP hits are classified before local emission. The unicast
+ * gateway_ip sentinels (NO_GATEWAY / EXCLUDED_CIDR) are honored unchanged.
+ *
+ * 1.20 note: reads the v2 policy map only. The v1 fallback that
+ * egress_gw_request_needs_redirect() keeps is deliberately absent here: the
+ * multicast flag this helper now gates on exists only in the v2 layout, so a
+ * v1 entry cannot answer the question it asks. See egw_policy_is_multicast().
+ */
+static __always_inline bool
+egw_mcast_request_is_egress(__be32 saddr __maybe_unused, __be32 daddr __maybe_unused)
+{
+#if defined(ENABLE_EGRESS_GATEWAY)
+	const struct egress_gw_policy_entry_v2 *egress_gw_policy_v2;
+
+	if (!egw_ipv4_is_mcast(daddr))
+		return false;
+
+	egress_gw_policy_v2 = lookup_ip4_egress_gw_policy_v2(saddr, daddr);
+
+	/* The matched policy must be one the control plane classified as
+	 * multicast. Testing only egw_ipv4_is_mcast(daddr) above asks a
+	 * question about the *packet*; this asks the question about the
+	 * *policy*, which is what "an operator has explicitly placed this
+	 * destination under a multicast policy" actually means (BLO-27931).
+	 *
+	 * Without it, any policy whose destination range happens to cover
+	 * 224.0.0.0/4 suppresses cluster-local fanout -- and the canonical
+	 * `destinationCIDRs: ["0.0.0.0/0"]` policy does exactly that, while
+	 * being a plain unicast policy to the control plane (its prefix base
+	 * address 0.0.0.0 is not multicast, so PolicyConfig.multicast stays
+	 * false and none of the multicast guards in pkg/egressgateway fire).
+	 * `128.0.0.0/1` and `192.0.0.0/2` straddle the same way.
+	 *
+	 * This check also subsumes the sentinel switch below for every
+	 * non-multicast policy, but the switch is still reached for multicast
+	 * ones, which is where EXCLUDED_CIDR / NO_GATEWAY still have to mean
+	 * "keep local delivery".
+	 */
+	if (!egw_policy_is_multicast(egress_gw_policy_v2))
+		return false;
+
+	switch (egress_gw_policy_v2->gateway_ip) {
+	case EGRESS_GATEWAY_NO_GATEWAY:
+	case EGRESS_GATEWAY_EXCLUDED_CIDR:
+		return false;
+	}
+
+	return true;
+#else
+	return false;
+#endif /* ENABLE_EGRESS_GATEWAY */
+}

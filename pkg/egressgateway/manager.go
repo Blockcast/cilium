@@ -733,7 +733,7 @@ func (manager *Manager) updateEgressRules4V2() {
 			gatewayIP = ExcludedCIDRIPv4
 		}
 
-		if policyPresent && policyVal.Match(gwc.egressIP4, gatewayIP, gwc.egressIfindex) {
+		if policyPresent && policyVal.Match(gwc.egressIP4, gatewayIP, gwc.egressIfindex, dstCIDR) {
 			return
 		}
 

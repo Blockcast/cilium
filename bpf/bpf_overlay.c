@@ -277,7 +277,32 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 
 #ifdef ENABLE_MULTICAST
 	if (IN_MULTICAST(bpf_ntohl(ip4->daddr))) {
-		if (mcast_lookup_subscriber_map(&ip4->daddr))
+		/* Gateway-node mirror of the origin-node ordering at
+		 * bpf_lxc.c:1935 - the EGW classification has to win against
+		 * local emission here too.
+		 *
+		 * This is the node a multicast CEGP hit was encapsulated to by
+		 * egress_gw_handle_request(), and the EGW block below is what
+		 * SNATs it and emits it out the egress interface. Taking the
+		 * subscriber fast path first consumed the packet whenever this
+		 * node happened to hold a local subscriber for the group --
+		 * tail_call_internal() never returns -- so the policy silently
+		 * stopped emitting, with no drop notification. That is exactly
+		 * the premise egw_mcast_request_is_egress() documents ("a
+		 * remote gateway is encapsulated to that node ... and SNATed
+		 * there by bpf_overlay.c"), so both ends have to read it the
+		 * same way.
+		 *
+		 * Strictly narrowing, and only for a destination an operator
+		 * put under a multicast policy: every case the classifier
+		 * declines -- multicast with no policy, a policy the control
+		 * plane did not flag as multicast, or a no-gateway /
+		 * excluded-CIDR sentinel -- still takes the pre-existing local
+		 * delivery path. Pinned both ways in
+		 * bpf/tests/tc_egressgw_gateway_node_multicast.c.
+		 */
+		if (!egw_mcast_request_is_egress(ip4->saddr, ip4->daddr) &&
+		    mcast_lookup_subscriber_map(&ip4->daddr))
 			return tail_call_internal(ctx,
 						  CILIUM_CALL_MULTICAST_EP_DELIVERY,
 						  ext_err);
@@ -356,18 +381,42 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 	{
 		__u32 egress_ifindex = 0;
 		__be32 snat_addr, daddr;
+		__be32 saddr;
+		__u8 nexthdr;
+		int l4_off;
+		fraginfo_t mcast_fraginfo;
 
+		saddr = ip4->saddr;
 		daddr = ip4->daddr;
+		nexthdr = ip4->protocol;
+		l4_off = ETH_HLEN + ipv4_hdrlen(ip4);
+		mcast_fraginfo = ipfrag_encode_ipv4(ip4);
+
 		if (egress_gw_snat_needed_hook(ip4->saddr, daddr, &snat_addr,
 					       &egress_ifindex)) {
 			__u32 tbid = EGRESS_GATEWAY_RT_TBID;
 
 			if (snat_addr == EGRESS_GATEWAY_NO_EGRESS_IP)
 				return DROP_NO_EGRESS_IP;
+			if (egw_ipv4_is_mcast(daddr) && !egress_ifindex)
+				return DROP_NO_FIB;
 
 			ret = ipv4_l3(ctx, ETH_HLEN, NULL, NULL, ip4);
 			if (unlikely(ret != CTX_ACT_OK))
 				return ret;
+
+			/* Multicast has no reply path and never reaches
+			 * to-netdev@bpf_host's SNAT, so rewrite the source here.
+			 */
+			if (egw_ipv4_is_mcast(daddr)) {
+				ret = snat_v4_rewrite_headers(ctx, nexthdr, ETH_HLEN,
+							      ipfrag_has_l4_header(mcast_fraginfo),
+							      l4_off, saddr, snat_addr,
+							      offsetof(struct iphdr, saddr), 0,
+							      0, 0, 0);
+				if (unlikely(ret < 0))
+					return ret;
+			}
 
 			set_identity_mark(ctx, *identity, MARK_MAGIC_EGW_DONE);
 

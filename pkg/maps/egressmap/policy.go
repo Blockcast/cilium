@@ -46,12 +46,43 @@ type EgressPolicyVal4 struct {
 	GatewayIP types.IPv4 `align:"gateway_ip"`
 }
 
+// EgressPolicyFlagMulticast marks a v2 policy entry whose destination CIDR is
+// itself a multicast prefix, i.e. one the control plane classified as a
+// multicast policy. The datapath reads it rather than re-deriving multicast-ness
+// from the packet's destination address: a `0.0.0.0/0` catch-all policy
+// LPM-matches every multicast destination but is an ordinary unicast policy, and
+// the two definitions disagreeing is BLO-27931. Mirrors
+// EGRESS_GW_POLICY_F_MULTICAST in bpf/lib/egress_gateway.h.
+const EgressPolicyFlagMulticast uint32 = 1 << 0
+
+// IsIPv4MulticastPrefix reports whether cidr is an IPv4 multicast prefix --
+// that is, whether its *base address* is in 224.0.0.0/4. It asks about the
+// prefix, never about an individual address matched by it.
+//
+// This is the single definition of "multicast policy" shared by the control
+// plane (pkg/egressgateway, which uses it to reject unsupported combinations)
+// and the map writer below (which stamps the result into the entry for the
+// datapath). It lives here, the lower layer, because pkg/egressgateway already
+// imports this package.
+func IsIPv4MulticastPrefix(cidr netip.Prefix) bool {
+	return cidr.Addr().Is4() && cidr.Addr().IsMulticast()
+}
+
+// PolicyFlags4 derives the EgressPolicyFlag* word a v2 entry for destCIDR
+// should carry.
+func PolicyFlags4(destCIDR netip.Prefix) uint32 {
+	if IsIPv4MulticastPrefix(destCIDR) {
+		return EgressPolicyFlagMulticast
+	}
+	return 0
+}
+
 type EgressPolicyVal4V2 struct {
 	EgressIP      types.IPv4 `align:"egress_ip"`
 	GatewayIP     types.IPv4 `align:"gateway_ip"`
 	Reserved      [3]uint32  `align:"reserved"`
 	EgressIfindex uint32     `align:"egress_ifindex"`
-	Reserved2     uint32     `align:"reserved2"`
+	Flags         uint32     `align:"flags"`
 }
 
 // EgressPolicyKey6 is the key of an egress policy map.
@@ -358,10 +389,17 @@ func (v *EgressPolicyVal4) Match(egressIP, gatewayIP netip.Addr) bool {
 		v.GetGatewayAddr() == gatewayIP
 }
 
-func (v *EgressPolicyVal4V2) Match(egressIP, gatewayIP netip.Addr, egressIfindex uint32) bool {
+// Match reports whether an existing entry already equals what Update would
+// write for this rule. destCIDR is taken because Flags is derived from it: an
+// entry whose flag word is stale (one written by an agent that predates the
+// flag, where the word was `reserved2` and always zero) must be rewritten, and
+// a Match that ignored Flags would leave it in place forever -- silently
+// disabling multicast egress across an upgrade.
+func (v *EgressPolicyVal4V2) Match(egressIP, gatewayIP netip.Addr, egressIfindex uint32, destCIDR netip.Prefix) bool {
 	return v.GetEgressAddr() == egressIP &&
 		v.GetGatewayAddr() == gatewayIP &&
-		v.EgressIfindex == egressIfindex
+		v.EgressIfindex == egressIfindex &&
+		v.Flags == PolicyFlags4(destCIDR)
 }
 
 // GetEgressIP returns the egress policy value's egress IP.
@@ -425,6 +463,7 @@ func (m *policyMap4) Update(sourceIP netip.Addr, destCIDR netip.Prefix, egressIP
 func (m *policyMap4V2) Update(sourceIP netip.Addr, destCIDR netip.Prefix, egressIP, gatewayIP netip.Addr, egressIfindex uint32) error {
 	key := NewEgressPolicyKey4(sourceIP, destCIDR)
 	val := NewEgressPolicyVal4V2(egressIP, gatewayIP, egressIfindex)
+	val.Flags = PolicyFlags4(destCIDR)
 
 	return m.m.Update(&key, &val)
 }
