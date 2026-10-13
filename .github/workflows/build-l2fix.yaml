@@ -20,7 +20,7 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          ref: omar/l2fix-1.20-port
+          ref: ${{ github.sha }}  # BLO-45582 pre-merge rc build
           persist-credentials: false
 
       - name: Free disk space
