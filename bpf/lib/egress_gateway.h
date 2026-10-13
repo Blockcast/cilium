@@ -9,6 +9,7 @@
 
 #include "encap.h"
 #include "eps.h"
+#include "metrics.h"
 
 #ifndef EGRESS_GATEWAY_RT_TBID
 #define EGRESS_GATEWAY_RT_TBID	0
@@ -146,23 +147,18 @@ struct {
  * (egress_gw_mcast_pod_egress()) and the remote-origin one that bpf_overlay.c
  * reaches through egress_gw_fib_lookup_and_redirect().
  *
- * Device: the policy's egress_ifindex, else the direct-routing device. Only an
- * egressGateway.interface (or default-route) policy carries an ifindex;
- * pkg/egressgateway/policy.go leaves it 0 for an egressIP policy, which unicast
- * resolves through the FIB. Multicast cannot, so the remote-origin path used to
- * drop every egressIP-policy packet with DROP_NO_FIB while the gateway-local
- * path, which already had this fallback, emitted the same policy's packets.
- *
- * PRECONDITION of that fallback: the egressIP must live on the direct-routing
- * device. The agent resolves the device owning the egressIP but does not
- * store its ifindex, so an egressIP on a secondary NIC would be emitted on the
- * direct-routing device instead. Storing it changes unicast too (a non-zero
- * ifindex bypasses the FIB), so that is tracked in BLO-45655.
+ * Device: the policy's egress_ifindex, else the direct-routing device. For an
+ * egressIP policy the agent stores the ifindex of the device owning the
+ * egressIP only in multicast-classified entries (BLO-45655): a unicast entry
+ * keeps 0 so unicast still resolves its device through the FIB, while a
+ * multicast entry, which has no FIB step, gets the owning NIC. The
+ * direct-routing fallback remains for an entry the agent could not resolve.
  *
  * If the egress device is not in cilium_devices, there is no MAC to write and
  * the frame keeps the originating pod's source MAC. This is deliberately
- * fail-open: an egressGateway.interface outside cilium_devices emitted this way
- * before BLO-45582.
+ * fail-open (an egressGateway.interface outside cilium_devices emitted this way
+ * before BLO-45582), but it is counted as REASON_EGW_MCAST_NO_DEVICE so it is
+ * visible in `cilium-dbg bpf metrics list` (BLO-45655).
  *
  * MACs: ctx_redirect() transmits the frame as received, i.e. with the
  * originating pod's MAC as source. Set the source to the egress device's MAC
@@ -193,7 +189,10 @@ egw_mcast_redirect(struct __ctx_buff *ctx, __u32 egress_ifindex, __be32 daddr)
 
 	if (!THIS_IS_L3_DEV) {
 		dev = device_state_lookup(egress_ifindex);
-		if (dev && eth_store_saddr(ctx, dev->mac.addr, 0) < 0)
+		if (!dev)
+			update_metrics(ctx_full_len(ctx), METRIC_EGRESS,
+				       REASON_EGW_MCAST_NO_DEVICE);
+		else if (eth_store_saddr(ctx, dev->mac.addr, 0) < 0)
 			return DROP_WRITE_ERROR;
 		if (eth_store_daddr(ctx, dmac.addr, 0) < 0)
 			return DROP_WRITE_ERROR;

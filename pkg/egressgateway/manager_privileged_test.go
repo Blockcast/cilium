@@ -538,6 +538,47 @@ func TestPrivilegedMulticastEgressGatewayManager(t *testing.T) {
 	})
 }
 
+// TestPrivilegedMulticastEgressIPPolicyIfindex: an egressIP policy writes the
+// ifindex of the device owning the egressIP into its multicast entry, so the
+// datapath emits on that NIC rather than on the direct-routing device, while
+// its unicast entry keeps 0 and goes on resolving its device through the FIB
+// (BLO-45655).
+func TestPrivilegedMulticastEgressIPPolicyIfindex(t *testing.T) {
+	k := setupEgressGatewayTestSuite(t)
+	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1})
+
+	link, err := safenetlink.LinkByName(testInterface1)
+	require.NoError(t, err)
+	ifIndex1 := uint32(link.Attrs().Index)
+
+	egressGatewayManager := k.manager
+
+	k.policies.sync(t)
+	k.nodes.sync(t)
+	k.endpoints.sync(t)
+
+	node1 := newCiliumNode(node1, node1IP, nodeGroup1Labels)
+	addNodeAndReconcile(t, k, egressGatewayManager, &node1)
+
+	addPolicyAndReconcile(t, egressGatewayManager, k.policies, &policyParams{
+		name:             "policy-mcast-egressip",
+		endpointLabels:   ep1Labels,
+		destinationCIDRs: []string{mcastDestCIDR, destCIDR},
+		policyGwParams: []policyGatewayParams{{
+			nodeLabels: nodeGroup1Labels,
+			egressIP:   egressIP1,
+		}},
+	})
+
+	ep1, _ := newEndpointAndIdentity("ep-mcast-egressip", ep1IP, ep1IPv6, ep1Labels)
+	addEndpointAndReconcile(t, egressGatewayManager, k.endpoints, &ep1)
+
+	assertEgressRules4(t, k.manager.policyMap4V2, []egressRule{
+		{ep1IP, mcastDestCIDR, egressIP1, node1IP, ifIndex1},
+		{ep1IP, destCIDR, egressIP1, node1IP, 0},
+	})
+}
+
 func TestPrivilegedEgressGatewayManager(t *testing.T) {
 	k := setupEgressGatewayTestSuite(t)
 	createTestInterface(t, k.sysctl, testInterface1, []string{egressCIDR1, egressCIDR1v6})

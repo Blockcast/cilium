@@ -47,6 +47,11 @@ type gatewayConfig struct {
 	ifaceName string
 	// egressIfindex is the ifindex of the interface used to SNAT traffic
 	egressIfindex uint32
+	// egressIPIfindex is the ifindex of the device owning an egressIP-policy's
+	// egress IP. It is written only into multicast-classified map entries
+	// (see policyMapIfindex): unicast keeps egressIfindex == 0 and resolves
+	// the device through the FIB, but multicast has no FIB step (BLO-45655).
+	egressIPIfindex uint32
 	// egressIP4 is the IP used to SNAT traffic with IPv4 policies
 	egressIP4 netip.Addr
 	// egressIP6 is the IP used to SNAT traffic with IPv6 policies
@@ -217,6 +222,7 @@ func (gwc *gatewayConfig) deriveFromPolicyGatewayConfig(manager *Manager, gc *po
 	var egressIP4, egressIP6 netip.Addr
 
 	gwc.localNodeConfiguredAsGateway = false
+	gwc.egressIPIfindex = 0
 	gwc.egressIP4 = EgressIPNotFoundIPv4
 	gwc.egressIP6 = EgressIPNotFoundIPv6
 
@@ -266,6 +272,7 @@ func (gwc *gatewayConfig) deriveFromPolicyGatewayConfig(manager *Manager, gc *po
 		dev := getDeviceWithAddress(manager, gc.egressIP)
 		if dev != nil {
 			gwc.ifaceName = dev.Name
+			gwc.egressIPIfindex = uint32(dev.Index)
 
 			if gc.egressIP.Is4() {
 				egressIP4 = gc.egressIP
@@ -293,6 +300,11 @@ func (gwc *gatewayConfig) deriveFromPolicyGatewayConfig(manager *Manager, gc *po
 				gwc.ifaceName, err = netdevice.GetIfaceWithIPv4Address(gc.egressIP)
 				if err != nil {
 					return fmt.Errorf("failed to retrieve interface with egress IP: %w", err)
+				}
+				// Best effort: unicast never needed it, so a failure leaves
+				// multicast on the datapath's direct-routing fallback.
+				if link, err := safenetlink.LinkByName(gwc.ifaceName); err == nil {
+					gwc.egressIPIfindex = uint32(link.Attrs().Index)
 				}
 
 				if v6Needed {
@@ -585,4 +597,16 @@ func ParseCEGPConfigID(cegp *v2.CiliumEgressGatewayPolicy) types.NamespacedName 
 	return policyID{
 		Name: cegp.Name,
 	}
+}
+
+// policyMapIfindex is the egress_ifindex to write into the IPv4 map entry for
+// dstCIDR. Unicast entries carry egressIfindex unchanged: a non-zero ifindex
+// would make unicast skip or override its FIB lookup. A multicast entry is only
+// ever hit by a multicast destination, which egw_mcast_redirect() emits without
+// a FIB lookup, so for an egressIP policy it gets the device owning the IP.
+func (gwc *gatewayConfig) policyMapIfindex(dstCIDR netip.Prefix) uint32 {
+	if gwc.egressIfindex == 0 && egressmap.IsIPv4MulticastPrefix(dstCIDR) {
+		return gwc.egressIPIfindex
+	}
+	return gwc.egressIfindex
 }

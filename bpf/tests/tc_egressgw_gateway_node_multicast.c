@@ -32,6 +32,13 @@
  * no egress_ifindex, and the remote-origin path used to drop it with
  * DROP_NO_FIB. It must emit on the direct-routing device with the device's
  * source MAC and the group's destination MAC.
+ *
+ * mcast_egress_ip_policy_secondary_nic (BLO-45655) - the agent now writes the
+ * ifindex of the NIC owning the egressIP into a multicast entry. When that NIC
+ * is not the direct-routing device, emission must use it and its MAC.
+ *
+ * mcast_no_device_state (BLO-45655) - an egress device outside cilium_devices
+ * still emits (fail-open) but must count REASON_EGW_MCAST_NO_DEVICE.
  */
 
 #include <bpf/ctx/skb.h>
@@ -47,6 +54,7 @@
 #define ENABLE_MASQUERADE_IPV6		1
 #define ENCAP_IFINDEX	42
 #define IFACE_IFINDEX	44
+#define SECONDARY_IFINDEX	46
 
 #define ctx_redirect mock_ctx_redirect
 static __always_inline __maybe_unused int
@@ -95,6 +103,7 @@ mock_mcast_lookup_subscriber_map(__be32 *group __maybe_unused)
 
 #include "lib/bpf_overlay.h"
 
+#include "lib/clear.h"
 #include "lib/egressgw.h"
 #include "lib/ipcache.h"
 #include "lib/network_device.h"
@@ -102,11 +111,14 @@ mock_mcast_lookup_subscriber_map(__be32 *group __maybe_unused)
 /* An egressIP policy carries no egress_ifindex; see egw_mcast_redirect(). */
 ASSIGN_CONFIG(__u32, direct_routing_dev_ifindex, IFACE_IFINDEX)
 
+static volatile __u32 redirect_ifindex;
+
 static __always_inline __maybe_unused int
 mock_ctx_redirect(const struct __sk_buff *ctx __maybe_unused,
 		  int ifindex __maybe_unused, __u32 flags __maybe_unused)
 {
-	if (ifindex == IFACE_IFINDEX && flags == 0)
+	redirect_ifindex = (__u32)ifindex;
+	if ((ifindex == IFACE_IFINDEX || ifindex == SECONDARY_IFINDEX) && flags == 0)
 		return TC_ACT_REDIRECT;
 
 	return CTX_ACT_OK;
@@ -291,9 +303,9 @@ int mcast_no_ifindex_setup(struct __ctx_buff *ctx)
 	return overlay_receive_packet(ctx);
 }
 
-static __always_inline int mcast_no_ifindex_v4_check(const struct __ctx_buff *ctx)
+static __always_inline int mcast_emit_v4_check(const struct __ctx_buff *ctx,
+					       __u32 want_ifindex, const __u8 *want_smac)
 {
-	__u8 dev_mac[ETH_ALEN] = EGRESS_DEV_MAC;
 	/* 232.1.1.50 -> 01:00:5e:01:01:32 */
 	__u8 group_mac[ETH_ALEN] = { 0x01, 0x00, 0x5e, 0x01, 0x01, 0x32 };
 	void *data, *data_end;
@@ -320,7 +332,9 @@ static __always_inline int mcast_no_ifindex_v4_check(const struct __ctx_buff *ct
 	if ((void *)l3 + sizeof(*l3) > data_end)
 		test_fatal("l3 out of bounds");
 
-	if (memcmp(l2->h_source, dev_mac, ETH_ALEN) != 0)
+	if (redirect_ifindex != want_ifindex)
+		test_fatal("redirected to ifindex %u, want %u", redirect_ifindex, want_ifindex);
+	if (memcmp(l2->h_source, want_smac, ETH_ALEN) != 0)
 		test_fatal("source MAC is not the egress device MAC");
 	if (memcmp(l2->h_dest, group_mac, ETH_ALEN) != 0)
 		test_fatal("destination MAC is not the group MAC");
@@ -333,10 +347,88 @@ static __always_inline int mcast_no_ifindex_v4_check(const struct __ctx_buff *ct
 CHECK("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_no_ifindex")
 int mcast_no_ifindex_check(const struct __ctx_buff *ctx)
 {
-	int ret = mcast_no_ifindex_v4_check(ctx);
+	__u8 dev_mac[ETH_ALEN] = EGRESS_DEV_MAC;
+	int ret = mcast_emit_v4_check(ctx, IFACE_IFINDEX, dev_mac);
 
 	del_egressgw_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN);
 	cilium_device_del_entry(IFACE_IFINDEX);
 
 	return ret;
+}
+
+/* BLO-45655: the egressIP lives on a secondary NIC, so the agent writes that
+ * NIC's ifindex into the multicast entry. It must win over the direct-routing
+ * device, and the frame must carry the secondary NIC's MAC.
+ */
+#define SECONDARY_DEV_MAC	{ 0x02, 0x00, 0x00, 0x04, 0x56, 0x55 }
+
+PKTGEN("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_secondary_nic")
+int mcast_secondary_nic_pktgen(struct __ctx_buff *ctx)
+{
+	return mcast_gateway_pktgen(ctx);
+}
+
+SETUP("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_secondary_nic")
+int mcast_secondary_nic_setup(struct __ctx_buff *ctx)
+{
+	__u8 dev_mac[ETH_ALEN] = EGRESS_DEV_MAC;
+	__u8 sec_mac[ETH_ALEN] = SECONDARY_DEV_MAC;
+
+	cilium_device_add_entry(IFACE_IFINDEX, dev_mac, 0);
+	cilium_device_add_entry(SECONDARY_IFINDEX, sec_mac, 0);
+	add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN,
+					GATEWAY_NODE_IP, EGRESS_IP, SECONDARY_IFINDEX);
+
+	return overlay_receive_packet(ctx);
+}
+
+CHECK("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_secondary_nic")
+int mcast_secondary_nic_check(const struct __ctx_buff *ctx)
+{
+	__u8 sec_mac[ETH_ALEN] = SECONDARY_DEV_MAC;
+	int ret = mcast_emit_v4_check(ctx, SECONDARY_IFINDEX, sec_mac);
+
+	del_egressgw_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN);
+	cilium_device_del_entry(IFACE_IFINDEX);
+	cilium_device_del_entry(SECONDARY_IFINDEX);
+
+	return ret;
+}
+
+/* BLO-45655: the egress device has no device_state (not in cilium_devices).
+ * Emission stays fail-open with the pod's source MAC, but is counted.
+ */
+PKTGEN("tc", "tc_egressgw_gw_node_mcast_no_device_state")
+int mcast_no_device_state_pktgen(struct __ctx_buff *ctx)
+{
+	return mcast_gateway_pktgen(ctx);
+}
+
+SETUP("tc", "tc_egressgw_gw_node_mcast_no_device_state")
+int mcast_no_device_state_setup(struct __ctx_buff *ctx)
+{
+	clear_map(&cilium_metrics);
+	add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN,
+					GATEWAY_NODE_IP, EGRESS_IP, SECONDARY_IFINDEX);
+
+	return overlay_receive_packet(ctx);
+}
+
+CHECK("tc", "tc_egressgw_gw_node_mcast_no_device_state")
+int mcast_no_device_state_check(const struct __ctx_buff *ctx)
+{
+	__u8 pod_mac[ETH_ALEN] = mac_one_addr;
+	struct metrics_key key = {
+		.reason = REASON_EGW_MCAST_NO_DEVICE,
+		.dir = METRIC_EGRESS,
+	};
+	int ret = mcast_emit_v4_check(ctx, SECONDARY_IFINDEX, pod_mac);
+
+	del_egressgw_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN);
+	if (ret != TEST_PASS)
+		return ret;
+
+	test_init();
+	assert_metrics_count(key, 1);
+	test_finish();
 }
