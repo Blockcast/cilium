@@ -1,0 +1,91 @@
+name: Bake kind multicast EGW (BLO-45348)
+
+# Canary-runbook Step 1 bake for a custom Cilium image, on kind instead of the
+# onprem-k8s minikube script (no Docker daemon / minikube in agent pods).
+on:
+  push:
+    branches: ['bake/**']
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: 'digest to bake (empty = whatever IMAGE_TAG resolves to)'
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPO: registry.blockcast.net/blockcast/cilium
+  IMAGE_TAG: v1.20.0-l2fix-mcast-egw-v1
+  INPUT_DIGEST: ${{ inputs.image_digest }}
+  CHART_VERSION: 1.20.0-pre.4   # the chart prod deploys with (cilium-values.yaml image comment)
+  KIND_VERSION: v0.29.0
+
+jobs:
+  bake:
+    name: kind bake + multicast/unicast CEGP assertions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install kind, cilium CLI, helm repo
+        run: |
+          curl -sSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          sudo install /tmp/kind /usr/local/bin/kind
+          CLI=$(curl -s https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)
+          curl -sSL "https://github.com/cilium/cilium-cli/releases/download/${CLI}/cilium-linux-amd64.tar.gz" | sudo tar xz -C /usr/local/bin
+          helm repo add cilium https://helm.cilium.io && helm repo update
+          kind version; cilium version --client; helm version; uname -r
+
+      - name: Registry login, resolve the digest under test
+        env:
+          PW: ${{ secrets.LOCAL_REGISTRY_PASSWORD }}
+        run: |
+          echo "$PW" | docker login registry.blockcast.net -u 'robot$pusher-cluster' --password-stdin
+          tagdig=$(docker buildx imagetools inspect "${IMAGE_REPO}:${IMAGE_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          echo "tag ${IMAGE_TAG} -> ${tagdig}"
+          DIG=${INPUT_DIGEST:-$tagdig}
+          docker buildx imagetools inspect "${IMAGE_REPO}@${DIG}"
+          echo "IMAGE_DIGEST=${DIG}" >> "$GITHUB_ENV"
+          echo "BAKING ${IMAGE_REPO}@${DIG}"
+
+      - name: kind cluster (3 nodes, no default CNI, no kube-proxy, dual-stack)
+        run: |
+          kind create cluster --config .github/bake/kind.yaml --wait 0s
+          V4=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | tr ' ' '\n' | grep -m1 '\.')
+          PFX=$(echo "$V4" | cut -d. -f1-2)
+          echo "MC_EGRESS_IP=${PFX}.255.128" >> "$GITHUB_ENV"
+          echo "UC_EGRESS_IP=${PFX}.255.129" >> "$GITHUB_ENV"
+          docker exec kind-worker2 ip addr add "${PFX}.255.128/32" dev eth0
+          docker exec kind-worker2 ip addr add "${PFX}.255.129/32" dev eth0
+          docker exec kind-worker2 ip -4 addr show eth0
+
+      - name: helm install prod cilium-values + sandbox overrides at the digest
+        env:
+          PW: ${{ secrets.LOCAL_REGISTRY_PASSWORD }}
+        run: |
+          kubectl -n kube-system create secret docker-registry registry-blockcast-net-pull \
+            --docker-server=registry.blockcast.net --docker-username='robot$pusher-cluster' --docker-password="$PW"
+          helm install cilium cilium/cilium --version "$CHART_VERSION" -n kube-system \
+            -f .github/bake/cilium-values.prod-parity.yaml -f .github/bake/overrides.yaml \
+            --set image.digest="$IMAGE_DIGEST"
+          helm get values cilium -n kube-system --all | grep -A4 '^image:'
+          kubectl wait --for=condition=Ready nodes --all --timeout=600s
+
+      - name: Assertions
+        run: .github/bake/assert.sh
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          kubectl get nodes -o wide || true
+          kubectl get pods -A -o wide || true
+          kubectl -n kube-system logs ds/cilium -c cilium-agent --tail=150 || true
+          for n in kind-worker kind-worker2; do
+            p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o name)
+            kubectl -n kube-system exec "$p" -c cilium-agent -- cilium-dbg bpf egress list || true
+            kubectl -n kube-system exec "$p" -c cilium-agent -- cilium-dbg metrics list -p drop || true
+          done

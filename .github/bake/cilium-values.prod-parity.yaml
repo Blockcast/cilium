@@ -1,0 +1,61 @@
+# Datapath-relevant keys copied from the production cilium-values.yaml
+# (private onprem-k8s repo, master bc97ad53). Internal addresses, host-specific
+# sidecars, SPIRE storage and node-pool tolerations are deliberately omitted;
+# the bake comment on BLO-45348 lists every difference.
+upgradeCompatibility: "1.19"
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 0
+    maxUnavailable: 1
+autoDirectNodeRoutes: true
+bgpControlPlane:
+  enabled: true
+bpf:
+  lbModeAnnotation: true
+  masquerade: true
+cni:
+  exclusive: false
+defaultLBServiceIPAM: lbipam
+devices:
+- eth0
+directRoutingDevice: eth0
+MTU: 1500
+directRoutingSkipUnreachable: true
+egressGateway:
+  enabled: true
+envoyConfig:
+  enabled: true
+externalIPs:
+  enabled: true
+ipam:
+  mode: kubernetes
+ipv4:
+  enabled: true
+ipv4NativeRoutingCIDR: 10.244.0.0/16
+ipv6:
+  enabled: true
+ipv6NativeRoutingCIDR: fd00:10:244::/48
+kubeProxyReplacement: true
+loadBalancer:
+  mode: dsr
+  dsrDispatch: opt
+pmtuDiscovery:
+  enabled: true
+  packetizationLayerPMTUDMode: "blackhole"
+l2NeighDiscovery:
+  enabled: true
+l2announcements:
+  enabled: true
+  leaseDuration: 15s
+  leaseRenewDeadline: 5s
+  leaseRetryPeriod: 2s
+prometheus:
+  enabled: true
+  port: 9962
+routingMode: native
+encryption:
+  enabled: true
+  type: wireguard
+imagePullSecrets:
+- name: registry-blockcast-net-pull
