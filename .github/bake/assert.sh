@@ -34,7 +34,7 @@ mkpod() { # name node label cmd
   kubectl -n $NS run "$1" --image=$NETSHOOT --labels="app=$3" \
     --overrides="{\"spec\":{\"nodeName\":\"$2\"}}" --command -- sh -c "$4"
 }
-ECHO='socat TCP-LISTEN:8080,fork,reuseaddr SYSTEM:"echo \$SOCAT_PEERADDR"'
+ECHO='socat TCP4-LISTEN:8080,fork,reuseaddr SYSTEM:"echo \$SOCAT_PEERADDR"'
 mkpod src-remote $OTHER egw-src 'sleep infinity'
 mkpod src-local  $GW    egw-src 'sleep infinity'
 mkpod echo-a     $OTHER echo "$ECHO"
