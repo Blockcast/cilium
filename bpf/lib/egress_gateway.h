@@ -153,6 +153,17 @@ struct {
  * drop every egressIP-policy packet with DROP_NO_FIB while the gateway-local
  * path, which already had this fallback, emitted the same policy's packets.
  *
+ * PRECONDITION of that fallback: the egressIP must live on the direct-routing
+ * device. The agent resolves the device owning the egressIP but does not
+ * store its ifindex, so an egressIP on a secondary NIC would be emitted on the
+ * direct-routing device instead. Storing it changes unicast too (a non-zero
+ * ifindex bypasses the FIB), so that is tracked in BLO-45655.
+ *
+ * If the egress device is not in cilium_devices, there is no MAC to write and
+ * the frame keeps the originating pod's source MAC. This is deliberately
+ * fail-open: an egressGateway.interface outside cilium_devices emitted this way
+ * before BLO-45582.
+ *
  * MACs: ctx_redirect() transmits the frame as received, i.e. with the
  * originating pod's MAC as source. Set the source to the egress device's MAC
  * and the destination to the RFC 1112 group MAC; nothing else on this path
