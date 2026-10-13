@@ -51,6 +51,8 @@ type gatewayConfig struct {
 	// egress IP. It is written only into multicast-classified map entries
 	// (see policyMapIfindex): unicast keeps egressIfindex == 0 and resolves
 	// the device through the FIB, but multicast has no FIB step (BLO-45655).
+	// The manager does not watch devices: if the owning NIC is recreated
+	// with a new ifindex, the entry is stale until the next reconcile.
 	egressIPIfindex uint32
 	// egressIP4 is the IP used to SNAT traffic with IPv4 policies
 	egressIP4 netip.Addr

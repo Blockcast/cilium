@@ -374,6 +374,7 @@ int mcast_secondary_nic_setup(struct __ctx_buff *ctx)
 	__u8 dev_mac[ETH_ALEN] = EGRESS_DEV_MAC;
 	__u8 sec_mac[ETH_ALEN] = SECONDARY_DEV_MAC;
 
+	clear_map(&cilium_metrics);
 	cilium_device_add_entry(IFACE_IFINDEX, dev_mac, 0);
 	cilium_device_add_entry(SECONDARY_IFINDEX, sec_mac, 0);
 	add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN,
@@ -386,13 +387,22 @@ CHECK("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_secondary_nic")
 int mcast_secondary_nic_check(const struct __ctx_buff *ctx)
 {
 	__u8 sec_mac[ETH_ALEN] = SECONDARY_DEV_MAC;
+	struct metrics_key key = {
+		.reason = REASON_EGW_MCAST_NO_DEVICE,
+		.dir = METRIC_EGRESS,
+	};
 	int ret = mcast_emit_v4_check(ctx, SECONDARY_IFINDEX, sec_mac);
 
 	del_egressgw_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN);
 	cilium_device_del_entry(IFACE_IFINDEX);
 	cilium_device_del_entry(SECONDARY_IFINDEX);
+	if (ret != TEST_PASS)
+		return ret;
 
-	return ret;
+	/* Negative control: a device with device_state must not be counted. */
+	test_init();
+	assert_metrics_count(key, 0);
+	test_finish();
 }
 
 /* BLO-45655: the egress device has no device_state (not in cilium_devices).
