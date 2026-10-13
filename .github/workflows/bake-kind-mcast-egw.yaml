@@ -1,4 +1,4 @@
-name: Bake kind multicast EGW (BLO-45348)
+name: Bake kind multicast EGW (BLO-45348, BLO-45719)
 
 # Canary-runbook Step 1 bake for a custom Cilium image, on kind instead of the
 # onprem-k8s minikube script (no Docker daemon / minikube in agent pods).
@@ -16,15 +16,24 @@ permissions:
 
 env:
   IMAGE_REPO: registry.blockcast.net/blockcast/cilium
-  IMAGE_TAG: v1.20.0-l2fix-mcast-egw-v1
+  IMAGE_TAG: v1.20.0-l2fix-mcast-egw-v3
   INPUT_DIGEST: ${{ inputs.image_digest }}
   CHART_VERSION: 1.20.0-pre.4   # the chart prod deploys with (cilium-values.yaml image comment)
   KIND_VERSION: v0.29.0
 
 jobs:
   bake:
-    name: kind bake + multicast/unicast CEGP assertions
+    name: kind bake (${{ matrix.variant }} egress NIC) + multicast/unicast CEGP assertions
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # primary: both egressIPs on eth0, the direct-routing device (prod today).
+        # secondary: the multicast egressIP on a second NIC that is a cilium
+        # device but not the direct-routing one (BLO-45655).
+        variant: [primary, secondary]
+    env:
+      VARIANT: ${{ matrix.variant }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -57,11 +66,25 @@ jobs:
           kind create cluster --config .github/bake/kind.yaml --wait 0s
           V4=$(docker network inspect kind -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | tr ' ' '\n' | grep -m1 '\.')
           PFX=$(echo "$V4" | cut -d. -f1-2)
-          echo "MC_EGRESS_IP=${PFX}.255.128" >> "$GITHUB_ENV"
           echo "UC_EGRESS_IP=${PFX}.255.129" >> "$GITHUB_ENV"
-          docker exec kind-worker2 ip addr add "${PFX}.255.128/32" dev eth0
+          echo "PRIMARY_BR=br-$(docker network inspect kind -f '{{.Id}}' | cut -c1-12)" >> "$GITHUB_ENV"
           docker exec kind-worker2 ip addr add "${PFX}.255.129/32" dev eth0
-          docker exec kind-worker2 ip -4 addr show eth0
+          if [ "$VARIANT" = secondary ]; then
+            docker network create --subnet 172.30.0.0/16 kind-sec
+            docker network connect kind-sec kind-worker2
+            MC_DEV=$(docker exec kind-worker2 ip -o -4 addr show to 172.30.0.0/16 | awk '{print $2}')
+            echo "MC_EGRESS_IP=172.30.255.128" >> "$GITHUB_ENV"
+            echo "MC_BR=br-$(docker network inspect kind-sec -f '{{.Id}}' | cut -c1-12)" >> "$GITHUB_ENV"
+            echo "EXTRA_SET=--set devices={eth0,${MC_DEV}}" >> "$GITHUB_ENV"
+            docker exec kind-worker2 ip addr add 172.30.255.128/32 dev "$MC_DEV"
+          else
+            MC_DEV=eth0
+            echo "MC_EGRESS_IP=${PFX}.255.128" >> "$GITHUB_ENV"
+            echo "MC_BR=br-$(docker network inspect kind -f '{{.Id}}' | cut -c1-12)" >> "$GITHUB_ENV"
+            docker exec kind-worker2 ip addr add "${PFX}.255.128/32" dev eth0
+          fi
+          echo "MC_DEV=${MC_DEV}" >> "$GITHUB_ENV"
+          docker exec kind-worker2 ip -4 addr show
 
       - name: helm install prod cilium-values + sandbox overrides at the digest
         env:
@@ -71,7 +94,7 @@ jobs:
             --docker-server=registry.blockcast.net --docker-username='robot$pusher-cluster' --docker-password="$PW"
           helm install cilium cilium/cilium --version "$CHART_VERSION" -n kube-system \
             -f .github/bake/cilium-values.prod-parity.yaml -f .github/bake/overrides.yaml \
-            --set image.digest="$IMAGE_DIGEST"
+            --set image.digest="$IMAGE_DIGEST" ${EXTRA_SET:-}
           helm get values cilium -n kube-system --all | grep -A4 '^image:'
           kubectl wait --for=condition=Ready nodes --all --timeout=600s
 
@@ -88,4 +111,5 @@ jobs:
             p=$(kubectl -n kube-system get pod -l k8s-app=cilium --field-selector spec.nodeName=$n -o name)
             kubectl -n kube-system exec "$p" -c cilium-agent -- cilium-dbg bpf egress list || true
             kubectl -n kube-system exec "$p" -c cilium-agent -- cilium-dbg metrics list -p drop || true
+            kubectl -n kube-system exec "$p" -c cilium-agent -- cilium-dbg bpf metrics list || true
           done

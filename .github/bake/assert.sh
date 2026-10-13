@@ -30,6 +30,7 @@ ok "cilium status healthy"
 echo "=== 3. workloads ==="
 kubectl create ns $NS
 GW_MAC=$(docker exec $GW cat /sys/class/net/eth0/address)
+MC_MAC=$(docker exec $GW cat /sys/class/net/$MC_DEV/address)
 mkpod() { # name node label cmd
   kubectl -n $NS run "$1" --image=$NETSHOOT --labels="app=$3" \
     --overrides="{\"spec\":{\"nodeName\":\"$2\"}}" --command -- sh -c "$4"
@@ -56,7 +57,7 @@ ok "pod-to-pod same-node and cross-node, no SNAT"
 echo "=== 5. CEGPs ==="
 docker run -d --name ext --network kind $NETSHOOT sh -c "$ECHO"
 EXT_IP=$(docker inspect ext -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-echo "external host $EXT_IP; gateway $GW mac $GW_MAC; MC_EGRESS_IP=$MC_EGRESS_IP UC_EGRESS_IP=$UC_EGRESS_IP"
+echo "variant $VARIANT; external host $EXT_IP; gateway $GW mac $GW_MAC; mcast dev $MC_DEV mac $MC_MAC; MC_EGRESS_IP=$MC_EGRESS_IP UC_EGRESS_IP=$UC_EGRESS_IP"
 kubectl label node $GW egress-gw=true --overwrite
 cat <<EOF | tee /dev/stderr | kubectl apply -f -
 apiVersion: cilium.io/v2
@@ -94,29 +95,48 @@ done
 ok "unicast CEGP SNATs to $UC_EGRESS_IP from remote and gateway-local sources"
 
 echo "=== 7. multicast CEGP SNAT (tcpdump on the docker bridge every node's eth0 is plugged into) ==="
-BR=br-$(docker network inspect kind -f '{{.Id}}' | cut -c1-12)
-sudo tcpdump -nn -e -U -i "$BR" -w /tmp/mc.pcap 'udp and dst net 224.0.0.0/4 and dst portrange 5001-5002' &
-TD=$!; sleep 2
+FILTER='udp and dst net 224.0.0.0/4 and dst portrange 5001-5002'
+sudo tcpdump -nn -e -U -i "$MC_BR" -w /tmp/mc.pcap "$FILTER" &
+TD=$!
+TDP=
+if [ "$MC_BR" != "$PRIMARY_BR" ]; then
+  sudo tcpdump -nn -e -U -i "$PRIMARY_BR" -w /tmp/mc-primary.pcap "$FILTER" &
+  TDP=$!
+fi
+sleep 2
 send() { kubectl -n $NS exec "$1" -- sh -c \
   "for i in \$(seq 20); do echo blo45348-$1-\$i; sleep 0.1; done | socat -u - UDP4-DATAGRAM:$GROUP:$2,ip-multicast-ttl=8"; }
 send src-remote 5001
 send src-local 5002
-sleep 2; sudo kill -INT $TD; wait $TD || true
+sleep 2; sudo kill -INT $TD $TDP; wait $TD $TDP || true
 sudo tcpdump -nn -e -r /tmp/mc.pcap | tee /tmp/mc.txt
 for port in 5001 5002; do
   lines=$(grep "$GROUP.$port:" /tmp/mc.txt || true)
   total=$(printf '%s' "$lines" | grep -c . || true)
-  good=$(printf '%s\n' "$lines" | grep -c "^.* $GW_MAC > .* $MC_EGRESS_IP\.[0-9]* > $GROUP.$port:" || true)
-  echo "port $port: $total packets on the wire, $good with src=$MC_EGRESS_IP from $GW ($GW_MAC)"
+  good=$(printf '%s\n' "$lines" | grep -c "^.* $MC_MAC > .* $MC_EGRESS_IP\.[0-9]* > $GROUP.$port:" || true)
+  echo "port $port: $total packets on $MC_BR, $good with src=$MC_EGRESS_IP from $GW $MC_DEV ($MC_MAC)"
   [ "$total" -ge 15 ] || fail "port $port: only $total/20 multicast packets left the cluster"
   [ "$good" -eq "$total" ] || fail "port $port: $((total-good)) packets not SNATed/emitted by gateway"
 done
 if grep -E ' 10\.244\.[0-9]+\.[0-9]+\.[0-9]+ > 232\.' /tmp/mc.txt; then fail "pod-sourced multicast leaked unSNATed"; fi
+if [ -n "$TDP" ]; then
+  leaked=$(sudo tcpdump -nn -e -r /tmp/mc-primary.pcap | tee /dev/stderr | grep -c "$GROUP" || true)
+  echo "direct-routing bridge $PRIMARY_BR: $leaked multicast packets"
+  [ "$leaked" -eq 0 ] || fail "$leaked multicast packets emitted on the direct-routing device instead of $MC_DEV"
+fi
 echo "dst MACs seen: $(awk '{print $4}' /tmp/mc.txt | sort | uniq -c | tr '\n' ';')"
 ok "multicast CEGP: pod -> $GROUP leaves $GW with src=$MC_EGRESS_IP (remote-origin and gateway-local)"
+
+echo "=== 7b. no REASON_EGW_MCAST_NO_DEVICE (multicast emitted without a device MAC) ==="
+for n in $OTHER $GW; do
+  m=$(dbg $n cilium-dbg bpf metrics list)
+  echo "--- $n bpf metrics"; echo "$m"
+  if echo "$m" | grep -q "egress device not in cilium_devices"; then fail "$n counted REASON_EGW_MCAST_NO_DEVICE"; fi
+done
+ok "0 REASON_EGW_MCAST_NO_DEVICE on $OTHER and $GW"
 
 echo "=== 8. unicast still SNATs after multicast traffic (coexistence) ==="
 got=$(kubectl -n $NS exec src-remote -- curl -sS --http0.9 --max-time 5 "$EXT_IP:8080")
 [ "$got" = "$UC_EGRESS_IP" ] || fail "post-multicast unicast saw $got"
 ok "unicast CEGP unchanged after multicast run"
-echo "BAKE RESULT: PASS image=${IMAGE_DIGEST}"
+echo "BAKE RESULT: PASS image=${IMAGE_DIGEST} variant=${VARIANT}"

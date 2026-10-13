@@ -1,7 +1,7 @@
 # Sandbox-only values (see cilium-values.prod-parity.yaml header).
 image:
   repository: registry.blockcast.net/blockcast/cilium
-  tag: v1.20.0-l2fix-mcast-egw-v1
+  tag: v1.20.0-l2fix-mcast-egw-v3
   useDigest: true           # digest resolved at runtime, passed with --set image.digest
 k8sServiceHost: kind-control-plane
 k8sServicePort: 6443
