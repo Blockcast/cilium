@@ -46,7 +46,7 @@ ip_of() { kubectl -n $NS get pod "$1" -o jsonpath='{.status.podIP}'; }
 echo "=== 4. pod-to-pod ==="
 SRC_IP=$(ip_of src-remote)
 for dst in echo-a echo-b; do
-  got=$(kubectl -n $NS exec src-remote -- curl -s --max-time 5 "$(ip_of $dst):8080")
+  got=$(kubectl -n $NS exec src-remote -- curl -sS --http0.9 --max-time 5 "$(ip_of $dst):8080")
   echo "src-remote($SRC_IP) -> $dst: peer=$got"
   [ "$got" = "$SRC_IP" ] || fail "pod-to-pod $dst saw $got"
 done
@@ -87,7 +87,7 @@ for n in $OTHER $GW; do echo "--- $n bpf egress list"; dbg $n cilium-dbg bpf egr
 
 echo "=== 6. unicast CEGP SNAT ==="
 for p in src-remote src-local; do
-  got=$(kubectl -n $NS exec $p -- curl -s --max-time 5 "$EXT_IP:8080")
+  got=$(kubectl -n $NS exec $p -- curl -sS --http0.9 --max-time 5 "$EXT_IP:8080")
   echo "$p($(ip_of $p)) -> ext $EXT_IP: peer=$got"
   [ "$got" = "$UC_EGRESS_IP" ] || fail "unicast CEGP from $p: ext saw $got, want $UC_EGRESS_IP"
 done
@@ -116,7 +116,7 @@ echo "dst MACs seen: $(awk '{print $4}' /tmp/mc.txt | sort | uniq -c | tr '\n' '
 ok "multicast CEGP: pod -> $GROUP leaves $GW with src=$MC_EGRESS_IP (remote-origin and gateway-local)"
 
 echo "=== 8. unicast still SNATs after multicast traffic (coexistence) ==="
-got=$(kubectl -n $NS exec src-remote -- curl -s --max-time 5 "$EXT_IP:8080")
+got=$(kubectl -n $NS exec src-remote -- curl -sS --http0.9 --max-time 5 "$EXT_IP:8080")
 [ "$got" = "$UC_EGRESS_IP" ] || fail "post-multicast unicast saw $got"
 ok "unicast CEGP unchanged after multicast run"
 echo "BAKE RESULT: PASS image=${IMAGE_DIGEST}"
