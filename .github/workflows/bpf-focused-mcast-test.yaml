@@ -140,7 +140,12 @@ jobs:
           #
           # Re-pin deliberately, citing the CI run, whenever a tc_egressgw
           # CHECK program or TEST block is added, removed, or reworked.
-          EXPECTED_BPF_PASS=54
+          #
+          # 54 -> 55 (BLO-45582): tc_egressgw_gateway_node_multicast gained a
+          # third CHECK program, an egressIP policy (egress_ifindex == 0) that
+          # the remote-origin path used to drop with DROP_NO_FIB. Derived, not
+          # measured locally (no clang in the authoring environment).
+          EXPECTED_BPF_PASS=55
 
           # Remove any pre-existing objects so the post-run assertion below
           # proves that *this* invocation compiled and selected each one.

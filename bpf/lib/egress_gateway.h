@@ -139,6 +139,58 @@ struct {
 #define EGRESS_GATEWAY_NO_EGRESS_IP (0)
 #define EGRESS_GATEWAY_NO_EGRESS_IP_V6 ((union v6addr){{0, 0, 0, 0}})
 
+/* egw_mcast_redirect - emit an SNATed IPv4 multicast EGW packet (BLO-45582).
+ *
+ * The single owner of "which device, which MACs" for multicast egress. Both
+ * gateway-side emit paths end here: the gateway-local one in bpf_lxc.c
+ * (egress_gw_mcast_pod_egress()) and the remote-origin one that bpf_overlay.c
+ * reaches through egress_gw_fib_lookup_and_redirect().
+ *
+ * Device: the policy's egress_ifindex, else the direct-routing device. Only an
+ * egressGateway.interface (or default-route) policy carries an ifindex;
+ * pkg/egressgateway/policy.go leaves it 0 for an egressIP policy, which unicast
+ * resolves through the FIB. Multicast cannot, so the remote-origin path used to
+ * drop every egressIP-policy packet with DROP_NO_FIB while the gateway-local
+ * path, which already had this fallback, emitted the same policy's packets.
+ *
+ * MACs: ctx_redirect() transmits the frame as received, i.e. with the
+ * originating pod's MAC as source. Set the source to the egress device's MAC
+ * and the destination to the RFC 1112 group MAC; nothing else on this path
+ * resolves L2 for a multicast destination.
+ *
+ * Under IS_BPF_HOST an egress device equal to the ingress device means "let
+ * the stack transmit" rather than "redirect back out the same device", as in
+ * egress_gw_fib_lookup_and_redirect().
+ */
+static __always_inline int
+egw_mcast_redirect(struct __ctx_buff *ctx, __u32 egress_ifindex, __be32 daddr)
+{
+	const struct device_state *dev;
+	__u32 group = bpf_ntohl(daddr);
+	union macaddr dmac = {
+		.addr = { 0x01, 0x00, 0x5e, (group >> 16) & 0x7f,
+			  (group >> 8) & 0xff, group & 0xff },
+	};
+
+	if (!egress_ifindex)
+		egress_ifindex = CONFIG(direct_routing_dev_ifindex);
+	if (!egress_ifindex)
+		return DROP_NO_FIB;
+
+	if (is_defined(IS_BPF_HOST) && egress_ifindex == ctx_get_ifindex(ctx))
+		return CTX_ACT_OK;
+
+	if (!THIS_IS_L3_DEV) {
+		dev = device_state_lookup(egress_ifindex);
+		if (dev && eth_store_saddr(ctx, dev->mac.addr, 0) < 0)
+			return DROP_WRITE_ERROR;
+		if (eth_store_daddr(ctx, dmac.addr, 0) < 0)
+			return DROP_WRITE_ERROR;
+	}
+
+	return ctx_redirect(ctx, egress_ifindex, 0);
+}
+
 static __always_inline
 int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, __be32 daddr,
 				      __u32 egress_ifindex, __u32 tbid, __s8 *ext_err)
@@ -147,22 +199,11 @@ int egress_gw_fib_lookup_and_redirect(struct __ctx_buff *ctx, __be32 egress_ip, 
 	int flags = 0;
 	int ret;
 
-	/* Multicast: skip FIB/neighbor — kernel handles MAC mapping; switch
-	 * handles L2 distribution. Requires the policy to set egress_ifindex.
-	 *
-	 * The same-interface contract further down (under IS_BPF_HOST, an
-	 * egress device equal to the ingress device means "let the stack
-	 * transmit", not "redirect back out the same device") applies here
-	 * too, so it is repeated rather than inherited: this early return
-	 * exists to skip the FIB lookup, so it can never reach the copy of
-	 * that guard that sits after it.
+	/* Multicast: there is no unicast route to 224.0.0.0/4, so a FIB lookup
+	 * can only fail. See egw_mcast_redirect().
 	 */
-	if (egress_ifindex && egw_ipv4_is_mcast(daddr)) {
-		if (is_defined(IS_BPF_HOST) && egress_ifindex == ctx_get_ifindex(ctx))
-			return CTX_ACT_OK;
-
-		return ctx_redirect(ctx, egress_ifindex, 0);
-	}
+	if (egw_ipv4_is_mcast(daddr))
+		return egw_mcast_redirect(ctx, egress_ifindex, daddr);
 
 	/* Immediate redirect to egress_ifindex requires L2 resolution.
 	 * Fall back to FIB lookup on older kernels.
