@@ -398,8 +398,6 @@ static __always_inline int handle_ipv4(struct __ctx_buff *ctx,
 
 			if (snat_addr == EGRESS_GATEWAY_NO_EGRESS_IP)
 				return DROP_NO_EGRESS_IP;
-			if (egw_ipv4_is_mcast(daddr) && !egress_ifindex)
-				return DROP_NO_FIB;
 
 			ret = ipv4_l3(ctx, ETH_HLEN, NULL, NULL, ip4);
 			if (unlikely(ret != CTX_ACT_OK))

@@ -27,6 +27,11 @@
  *     delivery. Fails if the classifier is weakened back to the packet test
  *     egw_ipv4_is_mcast(daddr), which is the regression this PR has already
  *     shipped twice.
+ *
+ * mcast_egress_ip_policy_no_ifindex (BLO-45582) - an egressIP policy carries
+ * no egress_ifindex, and the remote-origin path used to drop it with
+ * DROP_NO_FIB. It must emit on the direct-routing device with the device's
+ * source MAC and the group's destination MAC.
  */
 
 #include <bpf/ctx/skb.h>
@@ -92,6 +97,10 @@ mock_mcast_lookup_subscriber_map(__be32 *group __maybe_unused)
 
 #include "lib/egressgw.h"
 #include "lib/ipcache.h"
+#include "lib/network_device.h"
+
+/* An egressIP policy carries no egress_ifindex; see egw_mcast_redirect(). */
+ASSIGN_CONFIG(__u32, direct_routing_dev_ifindex, IFACE_IFINDEX)
 
 static __always_inline __maybe_unused int
 mock_ctx_redirect(const struct __sk_buff *ctx __maybe_unused,
@@ -255,6 +264,79 @@ int mcast_unflagged_stays_local_check(const struct __ctx_buff *ctx)
 	int ret = mcast_unflagged_stays_local_v4_check(ctx);
 
 	del_egressgw_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN);
+
+	return ret;
+}
+
+/* BLO-45582: an egressIP-configured policy (egress_ifindex == 0) must still be
+ * emitted, on the direct-routing device, with L2 rewritten for the wire.
+ */
+#define EGRESS_DEV_MAC	{ 0x02, 0x00, 0x00, 0x00, 0x45, 0x82 }
+
+PKTGEN("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_no_ifindex")
+int mcast_no_ifindex_pktgen(struct __ctx_buff *ctx)
+{
+	return mcast_gateway_pktgen(ctx);
+}
+
+SETUP("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_no_ifindex")
+int mcast_no_ifindex_setup(struct __ctx_buff *ctx)
+{
+	__u8 dev_mac[ETH_ALEN] = EGRESS_DEV_MAC;
+
+	cilium_device_add_entry(IFACE_IFINDEX, dev_mac, 0);
+	add_egressgw_mcast_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN,
+					GATEWAY_NODE_IP, EGRESS_IP, 0);
+
+	return overlay_receive_packet(ctx);
+}
+
+static __always_inline int mcast_no_ifindex_v4_check(const struct __ctx_buff *ctx)
+{
+	__u8 dev_mac[ETH_ALEN] = EGRESS_DEV_MAC;
+	/* 232.1.1.50 -> 01:00:5e:01:01:32 */
+	__u8 group_mac[ETH_ALEN] = { 0x01, 0x00, 0x5e, 0x01, 0x01, 0x32 };
+	void *data, *data_end;
+	struct ethhdr *l2;
+	struct iphdr *l3;
+
+	test_init();
+
+	data = (void *)(long)ctx_data(ctx);
+	data_end = (void *)(long)ctx->data_end;
+
+	if (data + sizeof(__u32) > data_end)
+		test_fatal("status code out of bounds");
+
+	if (*(__u32 *)data != TC_ACT_REDIRECT)
+		test_fatal("egressIP multicast policy was not redirected (status %u)",
+			   *(__u32 *)data);
+
+	l2 = data + sizeof(__u32);
+	if ((void *)l2 + sizeof(*l2) > data_end)
+		test_fatal("l2 out of bounds");
+
+	l3 = (void *)l2 + sizeof(*l2);
+	if ((void *)l3 + sizeof(*l3) > data_end)
+		test_fatal("l3 out of bounds");
+
+	if (memcmp(l2->h_source, dev_mac, ETH_ALEN) != 0)
+		test_fatal("source MAC is not the egress device MAC");
+	if (memcmp(l2->h_dest, group_mac, ETH_ALEN) != 0)
+		test_fatal("destination MAC is not the group MAC");
+	if (l3->saddr != EGRESS_IP)
+		test_fatal("multicast source was not rewritten to egress IP");
+
+	test_finish();
+}
+
+CHECK("tc", "tc_egressgw_gw_node_mcast_egress_ip_policy_no_ifindex")
+int mcast_no_ifindex_check(const struct __ctx_buff *ctx)
+{
+	int ret = mcast_no_ifindex_v4_check(ctx);
+
+	del_egressgw_policy_entry(CLIENT_IP, MCAST_PREFIX, MCAST_PREFIX_LEN);
+	cilium_device_del_entry(IFACE_IFINDEX);
 
 	return ret;
 }

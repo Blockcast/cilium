@@ -107,10 +107,10 @@
  *     (BLO-27928).
  *   - Policy points at this node but has resolved no egress IP: DROP_NO_EGRESS_IP.
  *   - Policy points at this node: SNAT inner src to the policy's egress_ip,
- *     ctx_redirect to the policy's egress_ifindex, falling back to
- *     direct_routing_dev_ifindex when the policy does not carry one. Kernel
- *     handles the L2 mcast MAC at xmit; no FIB / neighbour lookup. No CT entry
- *     (multicast has no reply path).
+ *     then egw_mcast_redirect(): the policy's egress_ifindex, falling back
+ *     to direct_routing_dev_ifindex, with the egress device's source MAC and
+ *     the group MAC set; no FIB / neighbour lookup. No CT entry (multicast
+ *     has no reply path).
  *
  * Caller MUST revalidate the data pointer after this returns CTX_ACT_OK,
  * because snat_v4_rewrite_headers internally calls ctx_store_bytes which
@@ -124,13 +124,14 @@
  * and with it the per-field offset argument it used to need — egress_ifindex
  * is now read from the same entry as everything else.
  */
+#ifdef ENABLE_IPV4
 static __always_inline int
 egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
 			   struct iphdr *ip4 __maybe_unused)
 {
 #if defined(ENABLE_EGRESS_GATEWAY)
 	const struct egress_gw_policy_entry_v2 *policy_v2;
-	__u32 egress_ifindex;
+	__be32 daddr = ip4->daddr; /* ip4 is stale after the SNAT rewrite */
 	fraginfo_t fraginfo;
 	int l4_off, ret;
 
@@ -189,19 +190,16 @@ egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
 	if (IS_ERR(ret))
 		return ret;
 
-	/* Honour the policy's own egress interface when it has one, so a
-	 * policy whose egressGateway.interface is not the direct-routing
-	 * device emits on the NIC that owns the egress IP it just SNATed to.
+	/* Device and L2 are owned by egw_mcast_redirect(), shared with the
+	 * remote-origin path in bpf_overlay.c so the two cannot disagree on
+	 * which device an egressIP policy emits on (BLO-45582).
 	 */
-	egress_ifindex = policy_v2->egress_ifindex;
-	if (!egress_ifindex)
-		egress_ifindex = CONFIG(direct_routing_dev_ifindex);
-
-	return ctx_redirect(ctx, egress_ifindex, 0);
+	return egw_mcast_redirect(ctx, policy_v2->egress_ifindex, daddr);
 #else
 	return CTX_ACT_OK;
 #endif /* ENABLE_EGRESS_GATEWAY */
 }
+#endif /* ENABLE_IPV4 */
 
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 static __always_inline int

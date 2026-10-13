@@ -19,7 +19,7 @@ jobs:
   multicast_egw_regression:
     name: BPF and Go multicast EGW regression
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -140,7 +140,12 @@ jobs:
           #
           # Re-pin deliberately, citing the CI run, whenever a tc_egressgw
           # CHECK program or TEST block is added, removed, or reworked.
-          EXPECTED_BPF_PASS=54
+          #
+          # 54 -> 55 (BLO-45582): tc_egressgw_gateway_node_multicast gained a
+          # third CHECK program, an egressIP policy (egress_ifindex == 0) that
+          # the remote-origin path used to drop with DROP_NO_FIB. Derived, not
+          # measured locally (no clang in the authoring environment).
+          EXPECTED_BPF_PASS=55
 
           # Remove any pre-existing objects so the post-run assertion below
           # proves that *this* invocation compiled and selected each one.
@@ -217,6 +222,17 @@ jobs:
             echo "Unexpected BPF egress gateway receipt (expected PASS=${EXPECTED_BPF_PASS} FAIL=0 SKIP=0; got PASS=${pass} FAIL=${fail} SKIP=${skip})" >&2
             exit 1
           fi
+
+      - name: Compile production BPF objects touched by multicast EGW
+        # BPF Checks (lint-bpf-checks.yaml) ends in startup_failure on every
+        # PR in this fork, so this is the only receipt that the real
+        # bpf_lxc/bpf_overlay/bpf_host programs still compile -- including the
+        # ENABLE_EGRESS_GATEWAY permutations -- rather than just the test
+        # objects above. Same builder and permutations as BPF Checks'
+        # `build_all`, restricted to the three objects this datapath touches.
+        run: |
+          contrib/scripts/builder.sh make --quiet -C bpf \
+            bpf_lxc.o bpf_overlay.o bpf_host.o BUILD_PERMUTATIONS=1 -j "$(nproc)"
 
       - name: Run CEGP validation and reconciliation regressions
         shell: bash
