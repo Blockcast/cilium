@@ -124,6 +124,7 @@
  * and with it the per-field offset argument it used to need — egress_ifindex
  * is now read from the same entry as everything else.
  */
+#ifdef ENABLE_IPV4
 static __always_inline int
 egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
 			   struct iphdr *ip4 __maybe_unused)
@@ -198,6 +199,7 @@ egress_gw_mcast_pod_egress(struct __ctx_buff *ctx __maybe_unused,
 	return CTX_ACT_OK;
 #endif /* ENABLE_EGRESS_GATEWAY */
 }
+#endif /* ENABLE_IPV4 */
 
 #if defined(ENABLE_HOST_FIREWALL) && !defined(ENABLE_ROUTING)
 static __always_inline int
