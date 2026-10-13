@@ -212,6 +212,10 @@ struct srv6_policy_key6 {
 #define REASON_ENCRYPTING			13
 #define REASON_LB_REVNAT_DELETE		14
 #define REASON_MTU_ERROR_MSG			15
+/* Blockcast fork: kept far from upstream's sequential allocation so a rebase
+ * cannot silently alias it. Multicast EGW emitted without a device MAC.
+ */
+#define REASON_EGW_MCAST_NO_DEVICE		127
 
 /* Cilium metrics direction for dropping/forwarding packet */
 enum metric_dir {

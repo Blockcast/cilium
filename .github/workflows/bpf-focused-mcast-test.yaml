@@ -145,7 +145,11 @@ jobs:
           # third CHECK program, an egressIP policy (egress_ifindex == 0) that
           # the remote-origin path used to drop with DROP_NO_FIB. Derived, not
           # measured locally (no clang in the authoring environment).
-          EXPECTED_BPF_PASS=55
+          #
+          # 55 -> 57 (BLO-45655): two more CHECK programs in the same object,
+          # an egressIP whose NIC is not the direct-routing device, and an
+          # egress device with no device_state (counted, not dropped).
+          EXPECTED_BPF_PASS=57
 
           # Remove any pre-existing objects so the post-run assertion below
           # proves that *this* invocation compiled and selected each one.
@@ -244,6 +248,7 @@ jobs:
             TestPrivilegedEgressGatewayCEGPParser
             TestPrivilegedEgressGatewayManager
             TestPrivilegedMulticastEgressGatewayManager
+            TestPrivilegedMulticastEgressIPPolicyIfindex
           )
           test_pattern=$(IFS='|'; echo "${REQUIRED_GO_TESTS[*]}")
 

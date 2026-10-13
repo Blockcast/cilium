@@ -733,18 +733,19 @@ func (manager *Manager) updateEgressRules4V2() {
 			gatewayIP = ExcludedCIDRIPv4
 		}
 
-		if policyPresent && policyVal.Match(gwc.egressIP4, gatewayIP, gwc.egressIfindex, dstCIDR) {
+		egressIfindex := gwc.policyMapIfindex(dstCIDR)
+		if policyPresent && policyVal.Match(gwc.egressIP4, gatewayIP, egressIfindex, dstCIDR) {
 			return
 		}
 
-		if err := manager.policyMap4V2.Update(endpointIP, dstCIDR, gwc.egressIP4, gatewayIP, gwc.egressIfindex); err != nil {
+		if err := manager.policyMap4V2.Update(endpointIP, dstCIDR, gwc.egressIP4, gatewayIP, egressIfindex); err != nil {
 			manager.logger.Error(
 				"Error applying IPv4 egress gateway policy",
 				logfields.Error, err,
 				logfields.SourceIP, endpointIP,
 				logfields.DestinationCIDR, dstCIDR,
 				logfields.EgressIP, gwc.egressIP4,
-				logfields.LinkIndex, gwc.egressIfindex,
+				logfields.LinkIndex, egressIfindex,
 				logfields.GatewayIP, gatewayIP,
 			)
 		} else {
