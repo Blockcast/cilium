@@ -41,6 +41,8 @@ jobs:
   build-and-push-prs:
     timeout-minutes: 45
     name: Build and Push Images
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -369,7 +371,11 @@ jobs:
           df -h
 
   image-digests:
-    if: ${{ always() }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        always()
+      )
     name: Display Digests
     runs-on:
       group: default-tools
@@ -400,6 +406,8 @@ jobs:
       contents: read
       pull-requests: read
       statuses: write
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/push-chart-ci.yaml
     with:
       checkout_ref: ${{ needs.build-and-push-prs.outputs.sha }}
@@ -413,10 +421,12 @@ jobs:
     runs-on:
       group: default-tools
       labels: arc-dind
-    if: ${{
-         github.event_name == 'pull_request_target' &&
-         github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
-        }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
+      )
     steps:
     - name: Debug
       run: |
@@ -432,10 +442,12 @@ jobs:
     environment:
       name: "Trigger CI from renovate PRs"
       deployment: false
-    if: ${{
-         github.event_name == 'pull_request_target' &&
-         github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
-        }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
+      )
     steps:
       - name: Generate Github App Token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1

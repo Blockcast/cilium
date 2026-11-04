@@ -83,9 +83,15 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   setup-and-test:
+    # LVH boots a nested KVM VM; keep it on the dedicated on-prem pool.
     runs-on:
-      group: default-tools
-      labels: arc-dind
+      - self-hosted
+      - linux
+      - x64
+      - pop-fleet
+      - nested-virt
+      - swtpm
+      - talos-qemu
     name: Setup & Test
     strategy:
       fail-fast: false

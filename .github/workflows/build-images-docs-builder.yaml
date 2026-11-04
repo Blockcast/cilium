@@ -26,6 +26,8 @@ concurrency:
 jobs:
   build-and-push:
     name: Build and Push Image
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -104,7 +106,11 @@ jobs:
   prepare-update:
     name: Prepare docs-builder image reference update
     needs: build-and-push
-    if: needs.build-and-push.outputs.digest
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.build-and-push.outputs.digest
+      )
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -157,6 +163,8 @@ jobs:
   push-update:
     name: Push docs-builder image reference update
     needs: [build-and-push, prepare-update]
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -202,7 +210,11 @@ jobs:
   image-digest:
     name: Retrieve and display image digest
     needs: build-and-push
-    if: needs.build-and-push.outputs.digest
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.build-and-push.outputs.digest
+      )
     runs-on:
       group: default-tools
       labels: arc-dind

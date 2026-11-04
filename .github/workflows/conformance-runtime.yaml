@@ -124,9 +124,15 @@ jobs:
 
   setup-and-test:
     needs: wait-for-images
+    # LVH boots a nested KVM VM; keep it on the dedicated on-prem pool.
     runs-on:
-      group: default-tools
-      labels: arc-dind
+      - self-hosted
+      - linux
+      - x64
+      - pop-fleet
+      - nested-virt
+      - swtpm
+      - talos-qemu
     name: "Runtime Test (${{matrix.focus}})"
     env:
       # GitHub doesn't provide a way to retrieve the name of a job, so we have

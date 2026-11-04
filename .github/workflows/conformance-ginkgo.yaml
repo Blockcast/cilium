@@ -314,9 +314,15 @@ jobs:
 
   setup-and-test:
     needs: [setup-vars, build-ginkgo-binary, generate-matrix, wait-for-images]
+    # LVH boots a nested KVM VM; keep it on the dedicated on-prem pool.
     runs-on:
-      group: default-tools
-      labels: arc-dind
+      - self-hosted
+      - linux
+      - x64
+      - pop-fleet
+      - nested-virt
+      - swtpm
+      - talos-qemu
     timeout-minutes: 45
     name: "E2E Test (${{ matrix.k8s-version }}, ${{matrix.focus}})"
     env:

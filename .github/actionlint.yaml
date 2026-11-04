@@ -4,6 +4,10 @@ self-hosted-runner:
     - "arc-dind"
     - "arc-deploy"
     - "ubuntu-24.04-arm64"
+    - "pop-fleet"
+    - "nested-virt"
+    - "swtpm"
+    - "talos-qemu"
 # Configuration for file paths. The keys are glob patterns to match to file
 # paths relative to the repository root. The values are the configurations for
 # the file paths. Note that the path separator is always '/'.

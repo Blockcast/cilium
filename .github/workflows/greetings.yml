@@ -15,9 +15,12 @@ jobs:
   greet:
     # Only enforce on drive-by / first-time contributors.
     # Regulars (MEMBER, COLLABORATOR, OWNER, CONTRIBUTOR) are skipped entirely.
-    if: >
-      github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' ||
-      github.event.pull_request.author_association == 'FIRST_TIMER' ||
-      github.event.pull_request.author_association == 'NONE'
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR' ||
+        github.event.pull_request.author_association == 'FIRST_TIMER' ||
+        github.event.pull_request.author_association == 'NONE'
+      )
     uses: cilium/cilium/.github/workflows/reusable-greetings.yml@main
     secrets: inherit

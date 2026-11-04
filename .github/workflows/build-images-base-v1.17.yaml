@@ -26,6 +26,8 @@ concurrency:
 jobs:
   has-credentials:
     name: Check for Quay secrets
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -51,7 +53,11 @@ jobs:
   build-and-push:
     needs: has-credentials
     # Skip this workflow for repositories without credentials and branches that are created by renovate where the event type is pull_request_target
-    if: ${{ needs.has-credentials.outputs.present && ! (github.event_name == 'pull_request_target' && startsWith(github.head_ref, 'renovate/')) }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.has-credentials.outputs.present && ! (github.event_name == 'pull_request_target' && startsWith(github.head_ref, 'renovate/'))
+      )
     name: Build and Push Images
     timeout-minutes: 60
     # No 'inputs.environment' here: this workflow has no 'workflow_call' trigger
@@ -341,6 +347,8 @@ jobs:
 
   image-digests:
     name: Display Digests
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on:
       group: default-tools
       labels: arc-dind
