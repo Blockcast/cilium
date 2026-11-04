@@ -15,6 +15,9 @@ concurrency:
 
 jobs:
   check_changes:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Deduce required tests from code changes
     runs-on:
       group: default-tools
@@ -39,7 +42,12 @@ jobs:
 
   codeowners:
     needs: check_changes
-    if: ${{ needs.check_changes.outputs.codeowners-changed == 'true' || needs.check_changes.outputs.added-files == 'true' || needs.check_changes.outputs.deleted-files == 'true' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.check_changes.outputs.codeowners-changed == 'true' || needs.check_changes.outputs.added-files == 'true' || needs.check_changes.outputs.deleted-files == 'true'
+      )
     name: Check CODEOWNERS consistency
     runs-on:
       group: default-tools

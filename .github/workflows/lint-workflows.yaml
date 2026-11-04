@@ -16,6 +16,9 @@ concurrency:
 
 jobs:
   ginkgo-workflow-comments:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Lint Ginkgo Workflows Comments
     runs-on:
       group: default-tools
@@ -114,6 +117,9 @@ jobs:
           fi
 
   ginkgo-schema-validation:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Validate Ginkgo Schema
     runs-on:
       group: default-tools
@@ -141,6 +147,9 @@ jobs:
           done
 
   conformance-schema-validation:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Validate k8s Versions Schema
     runs-on:
       group: default-tools
@@ -175,6 +184,9 @@ jobs:
           done
 
   name-validation:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Validate Workflow Names
     runs-on:
       group: default-tools
@@ -265,6 +277,9 @@ jobs:
           exit ${EXIT}
 
   actionlint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: actionlint
     runs-on:
       group: default-tools

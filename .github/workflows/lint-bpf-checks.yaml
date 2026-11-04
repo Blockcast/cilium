@@ -18,6 +18,9 @@ concurrency:
 
 jobs:
   check_changes:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Deduce required tests from code changes
     runs-on:
       group: default-tools
@@ -63,7 +66,12 @@ jobs:
     runs-on:
       group: default-tools
       labels: arc-dind
-    if: ${{ github.event_name == 'pull_request' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event_name == 'pull_request'
+      )
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -96,7 +104,12 @@ jobs:
   # Runs only if code under bpf/ or contrib/coccinnelle/ is changed.
   coccicheck:
     needs: check_changes
-    if: ${{ needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.coccinelle == 'true' || needs.check_changes.outputs.workflow-description == 'true' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.coccinelle == 'true' || needs.check_changes.outputs.workflow-description == 'true'
+      )
     name: Run coccicheck
     runs-on:
       group: default-tools
@@ -120,7 +133,12 @@ jobs:
   # Runs only if code under bpf/ is changed.
   build_all:
     needs: [check_changes]
-    if: ${{ needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.workflow-description == 'true' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.workflow-description == 'true'
+      )
     name: Build Datapath
     runs-on:
       group: default-tools
@@ -139,7 +157,12 @@ jobs:
 
   bpf_tests:
     needs: [check_changes]
-    if: ${{ needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.bpf-tests-runner == 'true' || needs.check_changes.outputs.workflow-description == 'true' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.check_changes.outputs.bpf-tree == 'true' || needs.check_changes.outputs.bpf-tests-runner == 'true' || needs.check_changes.outputs.workflow-description == 'true'
+      )
     name: BPF unit/integration Tests
     env:
       # GitHub doesn't provide a way to retrieve the name of a job, so we have

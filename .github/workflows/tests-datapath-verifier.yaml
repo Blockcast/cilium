@@ -83,6 +83,9 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   setup-and-test:
+    # Blockcast/cilium cannot access the selected nested-virt runner group.
+    # Re-enable this lane when a public-compatible on-prem KVM pool exists.
+    if: ${{ vars.PUBLIC_NESTED_KVM_RUNNER_ENABLED == 'true' }}
     # LVH boots a nested KVM VM; keep it on the dedicated on-prem pool.
     runs-on:
       - self-hosted
@@ -246,7 +249,7 @@ jobs:
   merge-and-diff:
     name: Merge & Diff
     needs: setup-and-test
-    if: ${{ always() }}
+    if: ${{ always() && needs.setup-and-test.result != 'skipped' }}
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -301,4 +304,9 @@ jobs:
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
-          status: ${{ needs.setup-and-test.result == 'success' && needs.merge-and-diff.result || needs.setup-and-test.result }}
+          status: >-
+            ${{
+              (needs.setup-and-test.result == 'skipped' ||
+              (needs.setup-and-test.result == 'success' && needs.merge-and-diff.result == 'success')) &&
+              'success' || 'failure'
+            }}

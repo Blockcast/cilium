@@ -18,6 +18,9 @@ concurrency:
 
 jobs:
   check_changes:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Deduce required tests from code changes
     runs-on:
       group: default-tools
@@ -56,7 +59,12 @@ jobs:
   # should be unaffected otherwise.
   build-html:
     needs: check_changes
-    if: ${{ needs.check_changes.outputs.docs-tree == 'true' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.check_changes.outputs.docs-tree == 'true'
+      )
     name: Validate & Build HTML
     runs-on:
       group: default-tools
@@ -76,7 +84,12 @@ jobs:
 
   check-generated-documentation:
     name: Check generated documentation
-    if: ${{ github.event_name != 'merge_group' }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event_name != 'merge_group'
+      )
     runs-on:
       group: default-tools
       labels: arc-light

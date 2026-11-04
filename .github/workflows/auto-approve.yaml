@@ -13,11 +13,12 @@ jobs:
       group: default-tools
       labels: arc-light
     permissions: {}
-    if: ${{
-         github.event.pull_request.user.login == 'cilium-renovate[bot]' &&
-         (github.actor == 'cilium-renovate[bot]' ||
-          github.actor == 'auto-committer[bot]')
-        }}
+    if: >-
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event.pull_request.user.login == 'cilium-renovate[bot]' && (github.actor == 'cilium-renovate[bot]' || github.actor == 'auto-committer[bot]')
+      )
     steps:
     - name: Debug
       run: |
@@ -26,6 +27,9 @@ jobs:
         echo ${{ github.event.requested_reviewer.login }}
 
   approve:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Approve
     needs: pre-approve
     environment:
