@@ -26,7 +26,9 @@ concurrency:
 jobs:
   has-credentials:
     name: Check for Quay secrets
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     # No 'inputs.environment' here: this workflow has no 'workflow_call' trigger
     # (it only runs on pull_request_target). The reusable workflow_call variant
     # that wires 'inputs.environment' only exists on the stable branches, so the
@@ -59,7 +61,9 @@ jobs:
     environment:
       name: 'release-base-images'
       deployment: false
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Checkout default branch (trusted)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -337,7 +341,9 @@ jobs:
 
   image-digests:
     name: Display Digests
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     # No 'inputs.environment' here: this workflow has no 'workflow_call' trigger
     # (it only runs on pull_request_target). The reusable workflow_call variant
     # that wires 'inputs.environment' only exists on the stable branches, so the

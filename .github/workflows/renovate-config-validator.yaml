@@ -9,7 +9,9 @@ on:
 jobs:
   validate:
     name: Validate Renovate configuration
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       contents: read
     steps:

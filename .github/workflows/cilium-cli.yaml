@@ -13,7 +13,9 @@ concurrency:
 jobs:
   build-cilium-cli-binaries:
     name: Build Cilium CLI binaries
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       contents: read
     steps:

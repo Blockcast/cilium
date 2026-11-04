@@ -13,7 +13,9 @@ on:
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       actions: read
       contents: read

@@ -8,7 +8,9 @@ on:
 jobs:
   applyNeedsAttentionLabel:
     name: Apply Info Complete Label
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       issues: write
     steps:

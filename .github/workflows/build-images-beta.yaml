@@ -21,7 +21,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -33,7 +35,9 @@ jobs:
     environment:
       name: release-beta-images
       deployment: false
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     strategy:
       matrix:
         include:
@@ -144,7 +148,9 @@ jobs:
 
   image-digests:
     name: Display Digests
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     needs: build-and-push
     steps:
       - name: Downloading Image Digests

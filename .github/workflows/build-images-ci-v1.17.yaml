@@ -41,7 +41,9 @@ jobs:
   build-and-push-prs:
     timeout-minutes: 45
     name: Build and Push Images
-    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-latest' }}
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     # GH-46482: Lint checks action is broken, skip dependency for now.
     #needs: wait-for-base-images
     strategy:
@@ -379,7 +381,9 @@ jobs:
   image-digests:
     if: ${{ always() }}
     name: Display Digests
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     needs: build-and-push-prs
     steps:
       - name: Downloading Image Digests
@@ -403,7 +407,9 @@ jobs:
     # Avoid running the "Trigger CI from renovate PRs" environment if we don't need to.
     name: Pre-Comment
     needs: build-and-push-prs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     if: ${{
          github.event_name == 'pull_request_target' &&
          github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
@@ -416,7 +422,9 @@ jobs:
 
   comment:
     name: Post test comment for Renovate PRs after images built
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     needs: pre-comment
     environment:
       name: "Trigger CI from renovate PRs"

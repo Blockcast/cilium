@@ -1,5 +1,8 @@
 self-hosted-runner:
   labels:
+    - "arc-light"
+    - "arc-dind"
+    - "arc-deploy"
     - "ubuntu-24.04-arm64"
 # Configuration for file paths. The keys are glob patterns to match to file
 # paths relative to the repository root. The values are the configurations for

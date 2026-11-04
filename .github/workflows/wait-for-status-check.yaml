@@ -34,7 +34,9 @@ permissions:
 jobs:
   wait-for-lint:
     name: Wait for lint checks
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     timeout-minutes: ${{ inputs.timeout-minutes }}
     steps:
       - name: Wait for lint workflows to complete

@@ -45,7 +45,9 @@ env:
 
 jobs:
   install-and-scaletest:
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     name: Install and Scale Test
     timeout-minutes: 120
     env:
