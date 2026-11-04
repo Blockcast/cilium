@@ -63,7 +63,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -71,7 +73,9 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -79,7 +83,18 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   setup-and-test:
-    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}
+    # Blockcast/cilium cannot access the selected nested-virt runner group.
+    # Re-enable this lane when a public-compatible on-prem KVM pool exists.
+    if: ${{ vars.PUBLIC_NESTED_KVM_RUNNER_ENABLED == 'true' }}
+    # LVH boots a nested KVM VM; keep it on the dedicated on-prem pool.
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - pop-fleet
+      - nested-virt
+      - swtpm
+      - talos-qemu
     name: Setup & Test
     strategy:
       fail-fast: false
@@ -234,8 +249,10 @@ jobs:
   merge-and-diff:
     name: Merge & Diff
     needs: setup-and-test
-    if: ${{ always() }}
-    runs-on: ubuntu-24.04
+    if: ${{ always() && needs.setup-and-test.result != 'skipped' }}
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
     - name: Checkout pull request branch (NOT TRUSTED)
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -279,10 +296,17 @@ jobs:
     if: ${{ always() }}
     name: Commit Status Final
     needs: [merge-and-diff, setup-and-test]
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set final commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
         with:
           sha: ${{ inputs.SHA || github.sha }}
-          status: ${{ needs.setup-and-test.result == 'success' && needs.merge-and-diff.result || needs.setup-and-test.result }}
+          status: >-
+            ${{
+              (needs.setup-and-test.result == 'skipped' ||
+              (needs.setup-and-test.result == 'success' && needs.merge-and-diff.result == 'success')) &&
+              'success' || 'failure'
+            }}

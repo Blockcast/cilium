@@ -46,7 +46,9 @@ permissions:
 
 jobs:
   greeting:
-    runs-on: ubuntu-latest
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       issues: write
       pull-requests: write

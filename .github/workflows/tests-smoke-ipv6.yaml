@@ -57,7 +57,9 @@ env:
 jobs:
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -67,7 +69,9 @@ jobs:
   conformance-test-ipv6:
     env:
       job_name: "Conformance Smoke Test with IPv6"
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     name: Installation and Conformance Test (ipv6)
     steps:
       - name: Collect Workflow Telemetry

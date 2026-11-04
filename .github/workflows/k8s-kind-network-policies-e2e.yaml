@@ -59,7 +59,9 @@ env:
 jobs:
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -68,7 +70,9 @@ jobs:
 
   kubernetes-e2e-net:
     name: K8s Network Policy E2E tests
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 45
     strategy:
       fail-fast: false

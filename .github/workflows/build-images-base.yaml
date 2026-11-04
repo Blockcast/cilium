@@ -45,13 +45,19 @@ concurrency:
 jobs:
   build-and-push:
     # Skip this workflow for repositories without credentials and branches that are created by renovate where the event type is pull_request_target
-    if: ${{ vars.QUAY_BASE_RELEASE_ENABLED == 'true' && ! (github.event_name == 'pull_request_target' && startsWith(github.head_ref, 'renovate/')) }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        vars.QUAY_BASE_RELEASE_ENABLED == 'true' && ! (github.event_name == 'pull_request_target' && startsWith(github.head_ref, 'renovate/'))
+      )
     name: Build and Push Images
     timeout-minutes: 60
     environment:
       name: ${{ inputs.environment || 'release-base-images' }}
       deployment: false
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Checkout base or default branch (trusted)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -11,13 +11,18 @@ on:
 
 jobs:
   external-contributions:
-    if: |
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
       (
+        (
         (github.event.pull_request.author_association != 'OWNER') &&
         (github.event.pull_request.author_association != 'COLLABORATOR') &&
         (github.event.pull_request.author_association != 'MEMBER')
+        )
       )
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     name: External Contributions
     permissions:
       pull-requests: write
@@ -83,7 +88,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-    runs-on: ubuntu-24.04
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
     - name: Label The PR
       uses: actions/labeler@f27b608878404679385c85cfa523b85ccb86e213 # v6.1.0

@@ -25,8 +25,13 @@ env:
 
 jobs:
   check_changes:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Deduce required tests from code changes
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     outputs:
       tested: ${{ steps.tested-tree.outputs.src }}
     steps:
@@ -49,7 +54,12 @@ jobs:
               - '!**/*.md'
 
   preflight-clusterrole:
-    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     name: Preflight Clusterrole Check
     steps:
       - name: Checkout code
@@ -61,7 +71,12 @@ jobs:
         run: make check-k8s-clusterrole
 
   helm-charts:
-    runs-on: ubuntu-24.04
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     name: Helm Charts Check
     steps:
       - name: Checkout

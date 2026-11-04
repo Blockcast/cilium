@@ -12,8 +12,13 @@ on:
 permissions: read-all
 jobs:
   Fuzzing:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Build and Run Fuzzers
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
     - name: Build Fuzzers
       id: build
