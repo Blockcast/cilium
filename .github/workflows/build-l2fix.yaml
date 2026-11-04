@@ -15,7 +15,17 @@
 # `fix/l2-responder-stale-vip-cleanup`, which silently built the wrong tree.
 # `source_ref` therefore carries NO default: a dispatch that omits it must fail
 # loudly rather than fall back to whichever branch was current when this file
-# was last edited. Prefer an immutable commit SHA.
+# was last edited.
+#
+# Version stamping (BLO-51992): `source_ref` must be a semver git TAG on a
+# clean tree, e.g. `v1.20.0-l2fix-mcast-egw-v4`. Go stamps the main-module
+# version from VCS, so an untagged commit is stamped `v0.0.0-<date>-<sha>` and a
+# modified tree gets `+dirty`. Trivy reads that version and matches it against
+# every upstream `github.com/cilium/cilium` advisory range, so Harbor reports
+# every Cilium CVE as Critical whether or not the fix is in our tree. The
+# verify step below reads the built binary's buildinfo and refuses to push
+# unless the version is exactly the tag. Tag the commit first:
+#   git tag v1.20.0-l2fix-<line>-vN <sha> && git push origin v1.20.0-l2fix-<line>-vN
 
 name: Build L2 Fix Image
 
@@ -27,7 +37,7 @@ on:
         required: true
         default: 'v1.19.1-l2fix'
       source_ref:
-        description: 'Git ref (branch, tag, or commit SHA) to build'
+        description: 'Git tag to build (semver, e.g. v1.20.0-l2fix-mcast-egw-v4). Branches and SHAs are refused.'
         required: true
 
 permissions:
@@ -42,15 +52,21 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.source_ref }}
+          ref: refs/tags/${{ github.event.inputs.source_ref }}
           persist-credentials: false
 
       - name: Record build source
+        env:
+          SOURCE_REF: ${{ github.event.inputs.source_ref }}
         run: |
           set -euo pipefail
-          echo "requested source_ref: ${{ github.event.inputs.source_ref }}"
+          echo "requested source_ref: $SOURCE_REF"
           echo "resolved commit:      $(git rev-parse HEAD)"
           git log --oneline -1
+          test "$(git describe --exact-match --tags HEAD)" = "$SOURCE_REF"
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain; echo "::error::tree is dirty; Go would stamp +dirty"; exit 1
+          fi
 
       - name: Free disk space
         run: |
@@ -67,13 +83,32 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      - name: Build and Push cilium agent
+      - name: Build cilium agent
         uses: docker/build-push-action@v6
         with:
           provenance: false
           context: .
           file: ./images/cilium/Dockerfile
-          push: true
+          load: true
           platforms: linux/amd64
           tags: registry.blockcast.net/blockcast/cilium:${{ github.event.inputs.tag }}
           target: release
+
+      - name: Verify cilium-agent Go module version is the tag
+        env:
+          IMAGE: registry.blockcast.net/blockcast/cilium:${{ github.event.inputs.tag }}
+          SOURCE_REF: ${{ github.event.inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          cid=$(docker create "$IMAGE")
+          docker cp "$cid:/usr/bin/cilium-agent" ./cilium-agent.verify
+          docker rm "$cid" >/dev/null
+          go version -m ./cilium-agent.verify | grep -E '^\s*(mod|build\s+vcs)'
+          got=$(go version -m ./cilium-agent.verify | awk '$1=="mod" && $2=="github.com/cilium/cilium" {print $3}')
+          if [ "$got" != "$SOURCE_REF" ]; then
+            echo "::error::cilium-agent main-module version is '$got', want '$SOURCE_REF' (pseudo-version or +dirty makes Harbor flag every upstream Cilium CVE)"
+            exit 1
+          fi
+
+      - name: Push cilium agent
+        run: docker push "registry.blockcast.net/blockcast/cilium:${{ github.event.inputs.tag }}"
