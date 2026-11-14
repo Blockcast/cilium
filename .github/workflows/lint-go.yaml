@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   go-mod:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -43,6 +44,7 @@ jobs:
           test -z "$(git status --porcelain)" || (echo "please run 'go mod tidy && go mod vendor', and submit your changes"; exit 1)
 
   license-check:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -65,6 +67,7 @@ jobs:
         run: go run ./tools/licensecheck ./... 2>/dev/null
 
   golangci:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -104,6 +107,7 @@ jobs:
           args: "--verbose --modules-download-mode=vendor -c tools/golangci-lint-kubeapi/golangci-lint-kubeapi.yaml ./pkg/k8s/apis/cilium.io/..."
 
   precheck:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -143,6 +147,7 @@ jobs:
           make custom-lint
 
   generate-api:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -172,6 +177,7 @@ jobs:
           contrib/scripts/check-api-code-gen.sh
 
   generate-k8s-api:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository

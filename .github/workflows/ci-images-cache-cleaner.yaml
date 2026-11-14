@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   cache-cleaner:
+    timeout-minutes: 180
     name: Clean Image Cache
     runs-on:
       group: default-tools

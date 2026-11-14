@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   check_changes:
+    timeout-minutes: 180
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -62,6 +63,7 @@ jobs:
               - '.github/workflows/lint-bpf-checks.yaml'
 
   checkpatch:
+    timeout-minutes: 180
     name: Check Patch
     runs-on:
       group: default-tools
@@ -103,6 +105,7 @@ jobs:
 
   # Runs only if code under bpf/ or contrib/coccinnelle/ is changed.
   coccicheck:
+    timeout-minutes: 180
     needs: check_changes
     if: >-
       (github.event_name != 'pull_request' ||
@@ -132,6 +135,7 @@ jobs:
 
   # Runs only if code under bpf/ is changed.
   build_all:
+    timeout-minutes: 180
     needs: [check_changes]
     if: >-
       (github.event_name != 'pull_request' ||
@@ -156,6 +160,7 @@ jobs:
           contrib/scripts/builder.sh make --quiet -C bpf build_all -j "$(nproc)" || (echo "Run 'make -C bpf build_all' locally to investigate build breakages"; exit 1)
 
   bpf_tests:
+    timeout-minutes: 180
     needs: [check_changes]
     if: >-
       (github.event_name != 'pull_request' ||

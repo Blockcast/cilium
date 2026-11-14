@@ -67,6 +67,7 @@ env:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -78,6 +79,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -91,6 +93,7 @@ jobs:
   # Wait for the cilium-ci image to be available, as it ships the BPF
   # toolchain (clang/llc/tc) extracted into the test VMs below.
   wait-for-images:
+    timeout-minutes: 180
     runs-on:
       group: default-tools
       labels: arc-dind
@@ -357,6 +360,7 @@ jobs:
           junit-directory: "cilium-junits"
 
   merge-upload:
+    timeout-minutes: 180
     if: ${{ always() && needs.setup-and-test.result != 'skipped' }}
     name: Merge and Upload Artifacts
     runs-on:
@@ -377,6 +381,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   commit-status-final:
+    timeout-minutes: 180
     if: ${{ always() }}
     name: Commit Status Final
     needs: setup-and-test

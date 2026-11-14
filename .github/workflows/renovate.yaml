@@ -15,6 +15,7 @@ on:
 
 jobs:
   renovate:
+    timeout-minutes: 60
     name: Run self-hosted Renovate
     runs-on:
       group: default-tools

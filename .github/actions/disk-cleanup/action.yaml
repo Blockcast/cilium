@@ -13,10 +13,14 @@ runs:
                 --threshold 50m \
                 -- /mnt
         echo "# Usage for /var/lib/docker/volumes"
-        sudo du --human-readable \
-                --dereference \
-                --threshold 50m \
-                -- /var/lib/docker/volumes/
+        if [ -d /var/lib/docker/volumes ]; then
+          sudo du --human-readable \
+                  --dereference \
+                  --threshold 50m \
+                  -- /var/lib/docker/volumes/
+        else
+          echo "/var/lib/docker/volumes is absent"
+        fi
     - name: Free up disk space
       shell: bash
       run: |
@@ -68,7 +72,11 @@ runs:
                 --threshold 50m \
                 -- /mnt
         echo "# Usage for /var/lib/docker/volumes"
-        sudo du --human-readable \
-                --dereference \
-                --threshold 50m \
-                -- /var/lib/docker/volumes/
+        if [ -d /var/lib/docker/volumes ]; then
+          sudo du --human-readable \
+                  --dereference \
+                  --threshold 50m \
+                  -- /var/lib/docker/volumes/
+        else
+          echo "/var/lib/docker/volumes is absent"
+        fi

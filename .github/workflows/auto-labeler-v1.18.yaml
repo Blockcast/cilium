@@ -11,6 +11,7 @@ on:
 
 jobs:
   external-contributions:
+    timeout-minutes: 60
     if: >-
       (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
       (
@@ -84,6 +85,7 @@ jobs:
             })
 
   auto-labeler:
+    timeout-minutes: 60
     name: Auto Labeler
     permissions:
       contents: read

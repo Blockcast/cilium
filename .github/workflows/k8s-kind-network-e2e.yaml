@@ -52,6 +52,7 @@ env:
 
 jobs:
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools

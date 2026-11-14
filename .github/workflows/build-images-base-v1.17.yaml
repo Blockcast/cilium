@@ -346,6 +346,7 @@ jobs:
           git push https://x-access-token:${{ steps.get_token.outputs.app_token }}@github.com/${{ env.repository }}.git HEAD:$ref
 
   image-digests:
+    timeout-minutes: 180
     name: Display Digests
     if: >-
       (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)

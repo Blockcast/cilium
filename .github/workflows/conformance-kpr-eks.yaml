@@ -75,6 +75,7 @@ env:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -86,6 +87,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   config:
+    timeout-minutes: 180
     name: Config
     runs-on:
       group: default-tools
@@ -100,6 +102,7 @@ jobs:
         run: echo "quarantine_netkit=${QUARANTINE_NETKIT}" >> "$GITHUB_OUTPUT"
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -218,6 +221,7 @@ jobs:
   # workflow's run summary. This job emits an equivalent annotation here when a
   # quarantined netkit job failed but was tolerated.
   quarantine-warning:
+    timeout-minutes: 180
     name: Quarantine Warning
     if: ${{ always() && needs.config.outputs.quarantine_netkit == 'true' && (needs.conformance-eks-kpr-netkit.result == 'failure' || needs.conformance-eks-kpr-netkit-l2.result == 'failure') }}
     needs: [config, conformance-eks-kpr-netkit, conformance-eks-kpr-netkit-l2]

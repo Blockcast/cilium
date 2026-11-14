@@ -56,6 +56,7 @@ env:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -67,6 +68,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -78,6 +80,7 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   conformance-test:
+    timeout-minutes: 180
     env:
       job_name: "Conformance Smoke Test"
     runs-on:

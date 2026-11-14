@@ -63,6 +63,7 @@ concurrency:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -74,6 +75,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -249,6 +251,7 @@ jobs:
           junit-directory: "cilium-junits"
 
   merge-upload:
+    timeout-minutes: 180
     if: ${{ always() }}
     name: Merge and Upload Artifacts
     runs-on:
@@ -269,6 +272,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
   commit-status-final:
+    timeout-minutes: 180
     if: ${{ always() }}
     name: Commit Status Final
     needs: integration-test

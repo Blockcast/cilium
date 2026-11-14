@@ -56,6 +56,7 @@ env:
 
 jobs:
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -67,6 +68,7 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   conformance-test-ipv6:
+    timeout-minutes: 180
     env:
       job_name: "Conformance Smoke Test with IPv6"
     runs-on:
