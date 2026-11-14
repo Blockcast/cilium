@@ -16,6 +16,7 @@ permissions:
 
 jobs:
   ariane-scheduled:
+    timeout-minutes: 60
     name: Run Scheduled Workflows
     strategy:
       fail-fast: false

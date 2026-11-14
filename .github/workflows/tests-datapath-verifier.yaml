@@ -61,6 +61,7 @@ env:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -72,6 +73,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -247,6 +249,7 @@ jobs:
           retention-days: 5
 
   merge-and-diff:
+    timeout-minutes: 180
     name: Merge & Diff
     needs: setup-and-test
     if: ${{ always() && needs.setup-and-test.result != 'skipped' }}
@@ -293,6 +296,7 @@ jobs:
         retention-days: 5
 
   commit-status-final:
+    timeout-minutes: 180
     if: ${{ always() }}
     name: Commit Status Final
     needs: [merge-and-diff, setup-and-test]

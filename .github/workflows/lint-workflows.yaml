@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   ginkgo-workflow-comments:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -117,6 +118,7 @@ jobs:
           fi
 
   ginkgo-schema-validation:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -147,6 +149,7 @@ jobs:
           done
 
   conformance-schema-validation:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -184,6 +187,7 @@ jobs:
           done
 
   name-validation:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -277,6 +281,7 @@ jobs:
           exit ${EXIT}
 
   actionlint:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository

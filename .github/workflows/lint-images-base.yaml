@@ -49,6 +49,7 @@ concurrency:
 
 jobs:
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -60,6 +61,7 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   lint:
+    timeout-minutes: 180
     name: Lint image build logic
     runs-on:
       group: default-tools

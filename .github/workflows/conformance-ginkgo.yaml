@@ -94,6 +94,7 @@ concurrency:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -105,6 +106,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   setup-vars:
+    timeout-minutes: 180
     name: Setup Vars
     runs-on:
       group: default-tools
@@ -143,6 +145,7 @@ jobs:
           echo image_tag_suffix=${IMAGE_TAG_SUFFIX} >> $GITHUB_OUTPUT
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -240,6 +243,7 @@ jobs:
           login-password: ${{ secrets.DOCKER_READ_PASSWORD }}
 
   generate-matrix:
+    timeout-minutes: 180
     name: Generate Job Matrix from YAMLs
     needs: setup-vars
     runs-on:

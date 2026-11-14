@@ -24,6 +24,7 @@ permissions:
 
 jobs:
   summary_report:
+    timeout-minutes: 60
     name: "Summary Report"
     env:
       job_name: "Summary Report"
@@ -81,6 +82,7 @@ jobs:
           echo "$chunk" >> $GITHUB_STEP_SUMMARY
 
   commit-status-final:
+    timeout-minutes: 60
     if: ${{ always() }}
     name: Commit Status Final
     needs: summary_report

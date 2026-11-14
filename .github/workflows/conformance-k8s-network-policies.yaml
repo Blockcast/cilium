@@ -18,6 +18,7 @@ env:
 
 jobs:
   preflight-clusterrole:
+    timeout-minutes: 180
     name: Preflight Clusterrole Check
     runs-on:
       group: default-tools
@@ -41,6 +42,7 @@ jobs:
              cilium-preflight/clusterrole.yaml
 
   cyclonus-test:
+    timeout-minutes: 180
     name: Cyclonus Test
     env:
       job_name: "Cyclonus Test"

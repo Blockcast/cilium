@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   stale:
+    timeout-minutes: 60
     name: Close Stale Issues
     runs-on:
       group: default-tools

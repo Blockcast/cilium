@@ -35,6 +35,7 @@ concurrency:
 
 jobs:
   setup-charts:
+    timeout-minutes: 180
     name: Setup Charts
     runs-on:
       group: default-tools
@@ -77,6 +78,7 @@ jobs:
         echo "chart_version=$(../cilium-default-branch/contrib/scripts/print-chart-version.sh)" | tee -a $GITHUB_OUTPUT
 
   push-charts:
+    timeout-minutes: 180
     name: Push Charts
     runs-on:
       group: default-tools
@@ -154,6 +156,7 @@ jobs:
         registry_password: ${{ secrets.QUAY_CHARTS_DEV_PASSWORD }}
 
   post-push:
+    timeout-minutes: 180
     name: Post-push steps
     runs-on:
       group: default-tools

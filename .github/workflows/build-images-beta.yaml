@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -147,6 +148,7 @@ jobs:
           retention-days: 1
 
   image-digests:
+    timeout-minutes: 180
     name: Display Digests
     runs-on:
       group: default-tools

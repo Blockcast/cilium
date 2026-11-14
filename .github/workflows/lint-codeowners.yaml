@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   check_changes:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -41,6 +42,7 @@ jobs:
               - '.github/workflows/lint-codeowners.yaml'
 
   codeowners:
+    timeout-minutes: 60
     needs: check_changes
     if: >-
       (github.event_name != 'pull_request' ||

@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   check_changes:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -58,6 +59,7 @@ jobs:
   # Runs only if code under Documentation or */cmd/ is changed as the docs
   # should be unaffected otherwise.
   build-html:
+    timeout-minutes: 60
     needs: check_changes
     if: >-
       (github.event_name != 'pull_request' ||
@@ -83,6 +85,7 @@ jobs:
           args: html
 
   check-generated-documentation:
+    timeout-minutes: 60
     name: Check generated documentation
     if: >-
       (github.event_name != 'pull_request' ||

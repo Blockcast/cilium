@@ -110,6 +110,7 @@ env:
 
 jobs:
   echo-inputs:
+    timeout-minutes: 180
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
     runs-on:
@@ -121,6 +122,7 @@ jobs:
           echo '${{ tojson(inputs) }}'
 
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -132,6 +134,7 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   generate-matrix:
+    timeout-minutes: 180
     name: Generate Matrix
     runs-on:
       group: default-tools

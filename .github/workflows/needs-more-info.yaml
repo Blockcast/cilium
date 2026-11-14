@@ -7,6 +7,7 @@ on:
 
 jobs:
   applyNeedsAttentionLabel:
+    timeout-minutes: 60
     name: Apply Info Complete Label
     runs-on:
       group: default-tools

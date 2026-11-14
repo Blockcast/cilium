@@ -18,6 +18,7 @@
 
     jobs:
       backport-label-updater:
+        timeout-minutes: 60
         name: Update labels of backported PRs
         runs-on:
           group: default-tools

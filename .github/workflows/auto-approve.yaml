@@ -7,6 +7,7 @@ on:
 
 jobs:
   pre-approve:
+    timeout-minutes: 60
     # Avoid running the 'auto-approve' environment if we don't need to.
     name: Pre-Approve
     runs-on:
@@ -27,6 +28,7 @@ jobs:
         echo ${{ github.event.requested_reviewer.login }}
 
   approve:
+    timeout-minutes: 60
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository

@@ -109,6 +109,7 @@ env:
 
 jobs:
   commit-status-start:
+    timeout-minutes: 180
     name: Commit Status Start
     runs-on:
       group: default-tools
@@ -120,6 +121,7 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   generate-matrix:
+    timeout-minutes: 180
     name: Generate Matrix
     runs-on:
       group: default-tools

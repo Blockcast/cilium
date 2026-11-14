@@ -26,6 +26,7 @@ env:
 
 jobs:
   generate-cleanup-matrix:
+    timeout-minutes: 180
     name: Generate Cleanup Matrix
     runs-on:
       group: default-tools
@@ -248,6 +249,7 @@ jobs:
           done
 
   generate-create-matrix:
+    timeout-minutes: 180
     name: Generate Create Matrix
     runs-on:
       group: default-tools

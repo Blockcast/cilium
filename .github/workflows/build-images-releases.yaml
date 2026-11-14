@@ -167,6 +167,7 @@ jobs:
           path: image-digest
 
   image-digests:
+    timeout-minutes: 180
     name: Display Digests
     runs-on:
       group: default-tools

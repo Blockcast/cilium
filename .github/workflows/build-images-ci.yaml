@@ -375,6 +375,7 @@ jobs:
           df -h
 
   image-digests:
+    timeout-minutes: 180
     if: >-
       (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
       (
@@ -419,6 +420,7 @@ jobs:
     secrets: inherit
 
   pre-comment:
+    timeout-minutes: 180
     # Avoid running the "Trigger CI from renovate PRs" environment if we don't need to.
     name: Pre-Comment
     needs: build-and-push-prs
@@ -438,6 +440,7 @@ jobs:
         echo ${{ github.event.event_name }}
 
   comment:
+    timeout-minutes: 180
     name: Post test comment for Renovate PRs after images built
     runs-on:
       group: default-tools

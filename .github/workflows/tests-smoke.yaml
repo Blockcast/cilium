@@ -25,6 +25,7 @@ env:
 
 jobs:
   check_changes:
+    timeout-minutes: 180
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -54,6 +55,7 @@ jobs:
               - '!**/*.md'
 
   preflight-clusterrole:
+    timeout-minutes: 180
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
@@ -71,6 +73,7 @@ jobs:
         run: make check-k8s-clusterrole
 
   helm-charts:
+    timeout-minutes: 180
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
