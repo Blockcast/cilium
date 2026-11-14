@@ -77,7 +77,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -85,7 +87,9 @@ jobs:
 
   config:
     name: Config
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     outputs:
       # Re-export the workflow-level QUARANTINE_NETKIT env so it can be consumed
       # from `with:` inputs and the status gate via needs.config.outputs.
@@ -97,7 +101,9 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -106,7 +112,9 @@ jobs:
 
   wait-for-images:
     name: Wait for images
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 30
     steps:
       - name: Checkout context ref (trusted)
@@ -213,7 +221,9 @@ jobs:
     name: Quarantine Warning
     if: ${{ always() && needs.config.outputs.quarantine_netkit == 'true' && (needs.conformance-eks-kpr-netkit.result == 'failure' || needs.conformance-eks-kpr-netkit-l2.result == 'failure') }}
     needs: [config, conformance-eks-kpr-netkit, conformance-eks-kpr-netkit-l2]
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Warn on quarantined netkit failure
         run: |

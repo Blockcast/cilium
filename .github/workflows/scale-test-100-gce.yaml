@@ -69,14 +69,18 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
           echo '${{ tojson(inputs) }}'
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -84,7 +88,9 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   install-and-scaletest:
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     name: Install and Scale Test
     timeout-minutes: 300
     env:

@@ -110,7 +110,9 @@ env:
 jobs:
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -119,7 +121,9 @@ jobs:
 
   generate-matrix:
     name: Generate Matrix
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     outputs:
       matrix: ${{ steps.generate-matrix.outputs.matrix }}
       timeout: ${{ steps.generate-matrix.outputs.timeout }}
@@ -188,7 +192,9 @@ jobs:
 
   wait-for-images:
     name: Wait for images
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 30
     steps:
       - name: Checkout context ref (trusted)
@@ -206,7 +212,18 @@ jobs:
 
   setup-and-test:
     needs: [wait-for-images, generate-matrix]
-    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}
+    # Blockcast/cilium cannot access the selected nested-virt runner group.
+    # Re-enable this lane when a public-compatible on-prem KVM pool exists.
+    if: ${{ vars.PUBLIC_NESTED_KVM_RUNNER_ENABLED == 'true' }}
+    # LVH boots a nested KVM VM; keep it on the dedicated on-prem pool.
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - pop-fleet
+      - nested-virt
+      - swtpm
+      - talos-qemu
     name: 'Setup & Test (${{ matrix.name }}, ${{ matrix.mode }}, ${{ matrix.kernel }})'
     env:
       job_name: 'Setup & Test (${{ matrix.name }}, ${{ matrix.mode }}, ${{ matrix.kernel }})'
@@ -784,4 +801,4 @@ jobs:
     with:
       context-ref: ${{ inputs.context-ref || github.sha }}
       sha: ${{ inputs.SHA || github.sha }}
-      success: ${{ needs.setup-and-test.result == 'success' }}
+      success: ${{ needs.setup-and-test.result == 'success' || needs.setup-and-test.result == 'skipped' }}

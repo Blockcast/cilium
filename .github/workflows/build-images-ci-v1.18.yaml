@@ -41,7 +41,11 @@ jobs:
   build-and-push-prs:
     timeout-minutes: 45
     name: Build and Push Images
-    runs-on: ${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     # GH-46482: Lint checks action is broken, skip dependency for now.
     #needs: wait-for-base-images
     outputs:
@@ -390,9 +394,15 @@ jobs:
           df -h
 
   image-digests:
-    if: ${{ always() }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        always()
+      )
     name: Display Digests
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     needs: build-and-push-prs
     steps:
       - name: Downloading Image Digests
@@ -419,6 +429,8 @@ jobs:
       contents: read
       pull-requests: read
       statuses: write
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/push-chart-ci.yaml
     with:
       checkout_ref: ${{ needs.build-and-push-prs.outputs.sha }}
@@ -429,11 +441,15 @@ jobs:
     # Avoid running the "Trigger CI from renovate PRs" environment if we don't need to.
     name: Pre-Comment
     needs: build-and-push-prs
-    runs-on: ubuntu-24.04
-    if: ${{
-         github.event_name == 'pull_request_target' &&
-         github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
-        }}
+    runs-on:
+      group: default-tools
+      labels: arc-dind
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
+      )
     steps:
     - name: Debug
       run: |
@@ -442,15 +458,19 @@ jobs:
 
   comment:
     name: Post test comment for Renovate PRs after images built
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     needs: pre-comment
     environment:
       name: "Trigger CI from renovate PRs"
       deployment: false
-    if: ${{
-         github.event_name == 'pull_request_target' &&
-         github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
-        }}
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        github.event_name == 'pull_request_target' &&
+        github.event.pull_request.user.login == vars.RENOVATE_BOT_USERNAME
+      )
     steps:
       - name: Generate Github App Token
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1

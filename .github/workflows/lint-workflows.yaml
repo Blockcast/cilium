@@ -16,8 +16,13 @@ concurrency:
 
 jobs:
   ginkgo-workflow-comments:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Lint Ginkgo Workflows Comments
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -112,8 +117,13 @@ jobs:
           fi
 
   ginkgo-schema-validation:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Validate Ginkgo Schema
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Checkout
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -137,8 +147,13 @@ jobs:
           done
 
   conformance-schema-validation:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Validate k8s Versions Schema
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Checkout
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -169,8 +184,13 @@ jobs:
           done
 
   name-validation:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: Validate Workflow Names
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -257,8 +277,13 @@ jobs:
           exit ${EXIT}
 
   actionlint:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     name: actionlint
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         name: checkout

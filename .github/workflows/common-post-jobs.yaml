@@ -22,7 +22,9 @@ jobs:
   merge-upload:
     if: ${{ always() }}
     name: Merge and Upload Artifacts
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       contents: read
       actions: read
@@ -51,7 +53,9 @@ jobs:
   commit-status-final:
     if: ${{ always() }}
     name: Commit Status Final
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       statuses: write
     steps:
@@ -64,7 +68,9 @@ jobs:
   fail-workflow:
     if: ${{ inputs.success == false }}
     name: Fail job if result is failure
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Fail job if result is failure
         # Besides reporting in the commit SHA if the test was or not successful,

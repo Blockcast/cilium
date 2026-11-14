@@ -16,7 +16,9 @@ on:
 jobs:
   renovate:
     name: Run self-hosted Renovate
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     permissions:
       contents: read
     steps:

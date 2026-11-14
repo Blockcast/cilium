@@ -58,7 +58,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -66,7 +68,9 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -75,7 +79,9 @@ jobs:
 
   installation-and-connectivity:
     name: "Installation and Connectivity Test (${{ matrix.name }})"
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 60
     strategy:
       fail-fast: false

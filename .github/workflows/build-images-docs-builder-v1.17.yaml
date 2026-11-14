@@ -25,7 +25,11 @@ concurrency:
 jobs:
   build-and-push:
     name: Build and Push Image
-    runs-on: ubuntu-24.04
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 30
     environment:
       name: docs-builder
@@ -101,8 +105,14 @@ jobs:
   prepare-update:
     name: Prepare docs-builder image reference update
     needs: build-and-push
-    if: needs.build-and-push.outputs.digest
-    runs-on: ubuntu-24.04
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.build-and-push.outputs.digest
+      )
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 10
     steps:
       - name: Checkout default branch (trusted)
@@ -152,7 +162,11 @@ jobs:
   push-update:
     name: Push docs-builder image reference update
     needs: [build-and-push, prepare-update]
-    runs-on: ubuntu-24.04
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 10
     environment:
       name: docs-builder
@@ -195,8 +209,14 @@ jobs:
   image-digest:
     name: Retrieve and display image digest
     needs: build-and-push
-    if: needs.build-and-push.outputs.digest
-    runs-on: ubuntu-24.04
+    if: >-
+      (github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (
+        needs.build-and-push.outputs.digest
+      )
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 10
     steps:
       - name: Checkout default branch (trusted)

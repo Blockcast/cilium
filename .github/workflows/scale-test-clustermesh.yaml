@@ -73,7 +73,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -81,7 +83,9 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -89,7 +93,9 @@ jobs:
           sha: ${{ inputs.SHA || github.sha }}
 
   install-and-test:
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     name: Install and Cluster Mesh Scale Test
     timeout-minutes: 60
     env:

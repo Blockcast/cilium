@@ -11,7 +11,9 @@ jobs:
   scruffy:
     if: github.repository_owner == 'cilium'
     name: scruffy
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     strategy:
       matrix:
         include:

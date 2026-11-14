@@ -47,7 +47,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -55,7 +57,9 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -64,7 +68,9 @@ jobs:
 
   lint-ariane-config:
     name: Lint Ariane Config
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-light
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

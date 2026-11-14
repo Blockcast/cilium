@@ -23,7 +23,9 @@ env:
 jobs:
   delete-cluster:
     name: Delete EKS Cluster
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-deploy
     timeout-minutes: 30
     continue-on-error: true
     steps:

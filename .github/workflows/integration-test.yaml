@@ -65,7 +65,9 @@ jobs:
   echo-inputs:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     name: Echo Workflow Dispatch Inputs
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Echo Workflow Dispatch Inputs
         run: |
@@ -73,7 +75,9 @@ jobs:
 
   commit-status-start:
     name: Commit Status Start
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set initial commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
@@ -85,12 +89,10 @@ jobs:
     env:
       # GitHub doesn't provide a way to retrieve the name of a job, so we have
       # to repeated it here.
-      job_name: "Integration Test (${{matrix.arch}})"
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: ["${{ vars.GH_RUNNER_EXTRA_POWER_UBUNTU_LATEST || 'ubuntu-24.04' }}", ubuntu-24.04-arm64]
-    runs-on: ${{ matrix.arch }}
+      job_name: "Integration Test"
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     timeout-minutes: 45
     steps:
       - name: Set commit status to pending
@@ -104,7 +106,7 @@ jobs:
           comment_on_pr: false
 
       - name: Setup additional repositories
-        if: ${{ startsWith(matrix.arch, 'ubuntu-latest') || startsWith(matrix.arch, 'ubuntu-24.04') }}
+        if: ${{ always() }}
         shell: bash
         run: |
           # This is required for libtinfo6
@@ -249,7 +251,9 @@ jobs:
   merge-upload:
     if: ${{ always() }}
     name: Merge and Upload Artifacts
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     needs: integration-test
     steps:
       - name: Checkout context ref (trusted)
@@ -268,7 +272,9 @@ jobs:
     if: ${{ always() }}
     name: Commit Status Final
     needs: integration-test
-    runs-on: ubuntu-24.04
+    runs-on:
+      group: default-tools
+      labels: arc-dind
     steps:
       - name: Set final commit status
         uses: cilium/cilium/.github/actions/set-commit-status@main # main
